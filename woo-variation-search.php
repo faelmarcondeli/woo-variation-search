@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WooCommerce Variation Search
  * Description: Integra a busca AJAX do tema Flatsome com variações de produtos WooCommerce
- * Version: 1.6
+ * Version: 1.7
  * Author: Custom
  * Requires PHP: 7.4
  * Requires at least: 6.0
@@ -16,6 +16,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 class WooVariationSearch {
     
     private static $instance = null;
+    private static $is_flatsome_ajax = false;
     
     public static function get_instance() {
         if ( self::$instance === null ) {
@@ -90,12 +91,34 @@ class WooVariationSearch {
         return $matched;
     }
     
+    private function get_variation_image_url( $product_id, $matched_variations ) {
+        $image_id = get_post_thumbnail_id( $product_id );
+        
+        if ( isset( $matched_variations[ $product_id ] ) ) {
+            $variation_id = $matched_variations[ $product_id ];
+            $variation_image_id = get_post_meta( $variation_id, '_thumbnail_id', true );
+            if ( $variation_image_id && (int) $variation_image_id > 0 ) {
+                $image_id = (int) $variation_image_id;
+            }
+        }
+        
+        $product_image = wp_get_attachment_image_src( $image_id );
+        return $product_image ? $product_image[0] : '';
+    }
+    
     public function custom_ajax_search() {
+        self::$is_flatsome_ajax = true;
+        
         if ( ! isset( $_REQUEST['query'] ) ) {
             wp_send_json_error( array( 'message' => 'No search query provided' ) );
         }
 
-        $query        = apply_filters( 'flatsome_ajax_search_query', sanitize_text_field( wp_unslash( $_REQUEST['query'] ) ) );
+        $query = apply_filters( 'flatsome_ajax_search_query', sanitize_text_field( wp_unslash( $_REQUEST['query'] ) ) );
+        
+        if ( empty( $query ) ) {
+            wp_send_json( array( 'suggestions' => array() ) );
+        }
+        
         $wc_activated = function_exists( 'is_woocommerce_activated' ) ? is_woocommerce_activated() : class_exists( 'WooCommerce' );
         $products     = array();
         $posts        = array();
@@ -133,44 +156,49 @@ class WooVariationSearch {
         }
 
         $results = array_merge( $products, $sku_products, $tag_products, $posts );
+        $added_ids = array();
 
         foreach ( $results as $key => $post ) {
             if ( $wc_activated && ( $post->post_type === 'product' || $post->post_type === 'product_variation' ) ) {
                 $product = wc_get_product( $post );
+                
+                if ( ! $product ) {
+                    continue;
+                }
 
                 if ( $product->get_parent_id() ) {
                     $parent_product = wc_get_product( $product->get_parent_id() );
                     if ( $parent_product ) {
                         $visible = $parent_product->get_catalog_visibility() === 'visible' || $parent_product->get_catalog_visibility() === 'search';
                         if ( $parent_product->get_status() !== 'publish' || ! $visible ) {
-                            unset( $results[ $key ] );
                             continue;
                         }
                     }
                 }
 
                 $product_id = $product->get_id();
-                $image_id = get_post_thumbnail_id( $product_id );
                 
-                if ( isset( $matched_variations[ $product_id ] ) ) {
-                    $variation_id = $matched_variations[ $product_id ];
-                    $variation_image_id = get_post_meta( $variation_id, '_thumbnail_id', true );
-                    if ( $variation_image_id && $variation_image_id > 0 ) {
-                        $image_id = $variation_image_id;
-                    }
+                if ( in_array( $product_id, $added_ids ) ) {
+                    continue;
                 }
+                $added_ids[] = $product_id;
                 
-                $product_image = wp_get_attachment_image_src( $image_id );
+                $img_url = $this->get_variation_image_url( $product_id, $matched_variations );
 
                 $suggestions[] = array(
                     'type'  => 'Product',
                     'id'    => $product_id,
                     'value' => $product->get_title(),
                     'url'   => $product->get_permalink(),
-                    'img'   => $product_image ? $product_image[0] : '',
+                    'img'   => $img_url,
                     'price' => $product->get_price_html(),
                 );
             } else {
+                if ( in_array( $post->ID, $added_ids ) ) {
+                    continue;
+                }
+                $added_ids[] = $post->ID;
+                
                 $suggestions[] = array(
                     'type'  => 'Page',
                     'id'    => $post->ID,
@@ -182,7 +210,7 @@ class WooVariationSearch {
             }
         }
 
-        if ( empty( $results ) ) {
+        if ( empty( $suggestions ) ) {
             $no_results = $wc_activated ? __( 'No products found.', 'woocommerce' ) : __( 'No matches found', 'flatsome' );
 
             $suggestions[] = array(
@@ -196,6 +224,8 @@ class WooVariationSearch {
             $suggestions = flatsome_unique_suggestions( array( $products, $sku_products, $tag_products ), $suggestions );
         }
 
+        self::$is_flatsome_ajax = false;
+        
         wp_send_json( array( 'suggestions' => $suggestions ) );
     }
     
