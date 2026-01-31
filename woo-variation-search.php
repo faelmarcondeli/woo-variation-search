@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WooCommerce Variation Search
  * Description: Integra a busca AJAX do tema Flatsome com variações de produtos WooCommerce
- * Version: 1.7
+ * Version: 1.8
  * Author: Custom
  * Requires PHP: 7.4
  * Requires at least: 6.0
@@ -16,7 +16,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 class WooVariationSearch {
     
     private static $instance = null;
-    private static $is_flatsome_ajax = false;
+    private static $is_our_search = false;
     
     public static function get_instance() {
         if ( self::$instance === null ) {
@@ -26,7 +26,6 @@ class WooVariationSearch {
     }
     
     private function __construct() {
-        add_filter( 'posts_where', array( $this, 'filter_search_where' ), 10, 2 );
         add_action( 'template_redirect', array( $this, 'redirect_product_search' ) );
         
         remove_action( 'wp_ajax_flatsome_ajax_search_products', 'flatsome_ajax_search' );
@@ -92,7 +91,12 @@ class WooVariationSearch {
     }
     
     private function get_variation_image_url( $product_id, $matched_variations ) {
-        $image_id = get_post_thumbnail_id( $product_id );
+        $image_id = 0;
+        
+        $product = wc_get_product( $product_id );
+        if ( $product ) {
+            $image_id = $product->get_image_id();
+        }
         
         if ( isset( $matched_variations[ $product_id ] ) ) {
             $variation_id = $matched_variations[ $product_id ];
@@ -102,12 +106,19 @@ class WooVariationSearch {
             }
         }
         
-        $product_image = wp_get_attachment_image_src( $image_id );
-        return $product_image ? $product_image[0] : '';
+        if ( $image_id ) {
+            $product_image = wp_get_attachment_image_src( $image_id );
+            return $product_image ? $product_image[0] : '';
+        }
+        
+        return '';
     }
     
     public function custom_ajax_search() {
-        self::$is_flatsome_ajax = true;
+        global $post;
+        $original_post = $post;
+        
+        self::$is_our_search = true;
         
         if ( ! isset( $_REQUEST['query'] ) ) {
             wp_send_json_error( array( 'message' => 'No search query provided' ) );
@@ -134,33 +145,55 @@ class WooVariationSearch {
             'posts_per_page'      => 100,
             'ignore_sticky_posts' => 1,
             'post_password'       => '',
-            'suppress_filters'    => false,
+            'suppress_filters'    => true,
         );
 
-        $matched_variations = array();
+        $matched_variations = $this->get_matched_variations( $query );
 
         if ( $wc_activated ) {
-            $matched_variations = $this->get_matched_variations( $query );
-            
             if ( function_exists( 'flatsome_ajax_search_get_products' ) ) {
                 $products     = flatsome_ajax_search_get_products( 'product', $args );
+                wp_reset_postdata();
+                
                 $sku_products = get_theme_mod( 'search_by_sku', 0 ) ? flatsome_ajax_search_get_products( 'sku', $args ) : array();
+                wp_reset_postdata();
+                
                 $tag_products = get_theme_mod( 'search_by_product_tag', 0 ) ? flatsome_ajax_search_get_products( 'tag', $args ) : array();
+                wp_reset_postdata();
+            }
+            
+            if ( ! empty( $matched_variations ) ) {
+                $variation_parent_ids = array_keys( $matched_variations );
+                $variation_args = array(
+                    'post_type'           => 'product',
+                    'post_status'         => 'publish',
+                    'posts_per_page'      => 50,
+                    'post__in'            => $variation_parent_ids,
+                    'ignore_sticky_posts' => 1,
+                    'suppress_filters'    => true,
+                );
+                $variation_products = get_posts( $variation_args );
+                wp_reset_postdata();
+                
+                if ( $variation_products ) {
+                    $products = array_merge( $products, $variation_products );
+                }
             }
         }
 
         if ( ( ! $wc_activated || get_theme_mod( 'search_result', 1 ) ) && ! isset( $_REQUEST['product_cat'] ) ) {
             if ( function_exists( 'flatsome_ajax_search_posts' ) ) {
                 $posts = flatsome_ajax_search_posts( $args );
+                wp_reset_postdata();
             }
         }
 
         $results = array_merge( $products, $sku_products, $tag_products, $posts );
         $added_ids = array();
 
-        foreach ( $results as $key => $post ) {
-            if ( $wc_activated && ( $post->post_type === 'product' || $post->post_type === 'product_variation' ) ) {
-                $product = wc_get_product( $post );
+        foreach ( $results as $key => $result_post ) {
+            if ( $wc_activated && ( $result_post->post_type === 'product' || $result_post->post_type === 'product_variation' ) ) {
+                $product = wc_get_product( $result_post->ID );
                 
                 if ( ! $product ) {
                     continue;
@@ -178,7 +211,7 @@ class WooVariationSearch {
 
                 $product_id = $product->get_id();
                 
-                if ( in_array( $product_id, $added_ids ) ) {
+                if ( in_array( $product_id, $added_ids, true ) ) {
                     continue;
                 }
                 $added_ids[] = $product_id;
@@ -194,17 +227,17 @@ class WooVariationSearch {
                     'price' => $product->get_price_html(),
                 );
             } else {
-                if ( in_array( $post->ID, $added_ids ) ) {
+                if ( in_array( $result_post->ID, $added_ids, true ) ) {
                     continue;
                 }
-                $added_ids[] = $post->ID;
+                $added_ids[] = $result_post->ID;
                 
                 $suggestions[] = array(
                     'type'  => 'Page',
-                    'id'    => $post->ID,
-                    'value' => get_the_title( $post->ID ),
-                    'url'   => get_the_permalink( $post->ID ),
-                    'img'   => get_the_post_thumbnail_url( $post->ID, 'thumbnail' ),
+                    'id'    => $result_post->ID,
+                    'value' => get_the_title( $result_post->ID ),
+                    'url'   => get_the_permalink( $result_post->ID ),
+                    'img'   => get_the_post_thumbnail_url( $result_post->ID, 'thumbnail' ),
                     'price' => '',
                 );
             }
@@ -224,44 +257,11 @@ class WooVariationSearch {
             $suggestions = flatsome_unique_suggestions( array( $products, $sku_products, $tag_products ), $suggestions );
         }
 
-        self::$is_flatsome_ajax = false;
+        self::$is_our_search = false;
+        $post = $original_post;
+        wp_reset_postdata();
         
         wp_send_json( array( 'suggestions' => $suggestions ) );
-    }
-    
-    public function filter_search_where( $where, $query ) {
-        global $wpdb;
-
-        if ( is_admin() && ! wp_doing_ajax() ) return $where;
-        if ( ! $query->is_search() ) return $where;
-        if ( $query->get('post_type') !== 'product' ) return $where;
-
-        $search = $query->get('s');
-        if ( empty( $search ) ) return $where;
-        
-        $search_escaped = $wpdb->esc_like( $search );
-        $search_escaped = esc_sql( $search_escaped );
-
-        $lookup_table = $wpdb->prefix . 'wc_product_attributes_lookup';
-        $terms_table = $wpdb->prefix . 'terms';
-
-        $where = "
-        AND (
-            {$wpdb->posts}.post_title LIKE '%{$search_escaped}%'
-            OR {$wpdb->posts}.ID IN (
-                SELECT DISTINCT pal.product_or_parent_id
-                FROM {$lookup_table} pal
-                INNER JOIN {$terms_table} t ON pal.term_id = t.term_id
-                WHERE pal.taxonomy = 'pa_cores-de-tecidos'
-                AND (
-                    t.name LIKE '%{$search_escaped}%'
-                    OR t.slug LIKE '%{$search_escaped}%'
-                )
-            )
-        )
-        ";
-
-        return $where;
     }
 }
 
