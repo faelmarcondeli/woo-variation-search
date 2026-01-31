@@ -26,11 +26,29 @@ class WooVariationSearch {
     
     private function __construct() {
         add_filter( 'posts_where', array( $this, 'filter_search_where' ), 10, 2 );
+        add_action( 'template_redirect', array( $this, 'redirect_product_search' ) );
         
         remove_action( 'wp_ajax_flatsome_ajax_search_products', 'flatsome_ajax_search' );
         remove_action( 'wp_ajax_nopriv_flatsome_ajax_search_products', 'flatsome_ajax_search' );
         add_action( 'wp_ajax_flatsome_ajax_search_products', array( $this, 'custom_ajax_search' ), 5 );
         add_action( 'wp_ajax_nopriv_flatsome_ajax_search_products', array( $this, 'custom_ajax_search' ), 5 );
+    }
+    
+    public function redirect_product_search() {
+        if ( is_search() && isset( $_GET['post_type'] ) && $_GET['post_type'] === 'product' ) {
+            $search_query = get_search_query();
+            
+            if ( ! empty( $search_query ) && function_exists( 'wc_get_page_permalink' ) ) {
+                $shop_url = wc_get_page_permalink( 'shop' );
+                
+                if ( $shop_url ) {
+                    $redirect_url = add_query_arg( 's', urlencode( $search_query ), $shop_url );
+                    
+                    wp_safe_redirect( $redirect_url );
+                    exit;
+                }
+            }
+        }
     }
     
     private function get_matched_variations( $search ) {
