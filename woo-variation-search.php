@@ -27,11 +27,56 @@ class WooVariationSearch {
     
     private function __construct() {
         add_action( 'template_redirect', array( $this, 'redirect_product_search' ) );
+        add_action( 'woocommerce_product_query', array( $this, 'modify_shop_search_query' ), 10, 2 );
         
         remove_action( 'wp_ajax_flatsome_ajax_search_products', 'flatsome_ajax_search' );
         remove_action( 'wp_ajax_nopriv_flatsome_ajax_search_products', 'flatsome_ajax_search' );
         add_action( 'wp_ajax_flatsome_ajax_search_products', array( $this, 'custom_ajax_search' ), 5 );
         add_action( 'wp_ajax_nopriv_flatsome_ajax_search_products', array( $this, 'custom_ajax_search' ), 5 );
+    }
+    
+    public function modify_shop_search_query( $query, $wc_query ) {
+        if ( ! is_shop() && ! is_product_category() && ! is_product_tag() ) {
+            return;
+        }
+        
+        $search = isset( $_GET['s'] ) ? sanitize_text_field( $_GET['s'] ) : '';
+        
+        if ( empty( $search ) ) {
+            return;
+        }
+        
+        $matched_variations = $this->get_matched_variations( $search );
+        
+        if ( empty( $matched_variations ) ) {
+            return;
+        }
+        
+        $color_product_ids = array_keys( $matched_variations );
+        
+        $current_post_in = $query->get( 'post__in' );
+        
+        if ( ! empty( $current_post_in ) ) {
+            $merged_ids = array_unique( array_merge( $current_post_in, $color_product_ids ) );
+        } else {
+            global $wpdb;
+            $search_escaped = '%' . $wpdb->esc_like( $search ) . '%';
+            
+            $title_matches = $wpdb->get_col( $wpdb->prepare(
+                "SELECT ID FROM {$wpdb->posts} 
+                WHERE post_type = 'product' 
+                AND post_status = 'publish' 
+                AND post_title LIKE %s",
+                $search_escaped
+            ) );
+            
+            $merged_ids = array_unique( array_merge( $title_matches, $color_product_ids ) );
+        }
+        
+        if ( ! empty( $merged_ids ) ) {
+            $query->set( 'post__in', $merged_ids );
+            $query->set( 's', '' );
+        }
     }
     
     public function redirect_product_search() {
