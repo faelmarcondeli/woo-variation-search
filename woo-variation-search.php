@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WooCommerce Variation Search
  * Description: Integra a busca AJAX do tema Flatsome com variações de produtos WooCommerce
- * Version: 1.5
+ * Version: 1.6
  * Author: Custom
  * Requires PHP: 7.4
  * Requires at least: 6.0
@@ -16,8 +16,6 @@ if ( ! defined( 'ABSPATH' ) ) {
 class WooVariationSearch {
     
     private static $instance = null;
-    private $matched_variations = array();
-    private $current_search_term = '';
     
     public static function get_instance() {
         if ( self::$instance === null ) {
@@ -28,35 +26,20 @@ class WooVariationSearch {
     
     private function __construct() {
         add_filter( 'posts_where', array( $this, 'filter_search_where' ), 10, 2 );
-        add_filter( 'flatsome_ajax_search_function', array( $this, 'custom_flatsome_search' ), 10, 4 );
+        
+        remove_action( 'wp_ajax_flatsome_ajax_search_products', 'flatsome_ajax_search' );
+        remove_action( 'wp_ajax_nopriv_flatsome_ajax_search_products', 'flatsome_ajax_search' );
+        add_action( 'wp_ajax_flatsome_ajax_search_products', array( $this, 'custom_ajax_search' ), 5 );
+        add_action( 'wp_ajax_nopriv_flatsome_ajax_search_products', array( $this, 'custom_ajax_search' ), 5 );
     }
     
-    public function custom_flatsome_search( $query_function, $search_query, $args, $defaults ) {
-        if ( ! isset( $args['post_type'] ) || $args['post_type'] !== 'product' ) {
-            return $query_function;
-        }
-        
-        $search = isset( $args['s'] ) ? $args['s'] : '';
-        if ( empty( $search ) ) {
-            return $query_function;
-        }
-        
-        $this->prepare_variation_search( $search );
-        
-        if ( ! empty( $this->matched_variations ) ) {
-            add_filter( 'post_thumbnail_id', array( $this, 'filter_thumbnail_id' ), 20, 2 );
-        }
-        
-        return $query_function;
-    }
-    
-    private function prepare_variation_search( $search ) {
+    private function get_matched_variations( $search ) {
         global $wpdb;
         
-        $this->current_search_term = sanitize_title( remove_accents( $search ) );
+        $search_term = sanitize_title( remove_accents( $search ) );
         
-        if ( empty( $this->current_search_term ) ) {
-            return;
+        if ( empty( $search_term ) ) {
+            return array();
         }
         
         $lookup_table = $wpdb->prefix . 'wc_product_attributes_lookup';
@@ -72,40 +55,130 @@ class WooVariationSearch {
                 t.name LIKE %s
                 OR t.slug LIKE %s
             )",
-            '%' . $wpdb->esc_like( $this->current_search_term ) . '%',
-            '%' . $wpdb->esc_like( $this->current_search_term ) . '%'
+            '%' . $wpdb->esc_like( $search_term ) . '%',
+            '%' . $wpdb->esc_like( $search_term ) . '%'
         ) );
         
-        $this->matched_variations = array();
+        $matched = array();
         
         if ( $color_products ) {
             foreach ( $color_products as $row ) {
-                if ( ! isset( $this->matched_variations[ $row->parent_id ] ) ) {
-                    $this->matched_variations[ $row->parent_id ] = (int) $row->variation_id;
+                if ( ! isset( $matched[ $row->parent_id ] ) ) {
+                    $matched[ $row->parent_id ] = (int) $row->variation_id;
                 }
             }
         }
+        
+        return $matched;
     }
     
-    public function filter_thumbnail_id( $thumbnail_id, $post_id ) {
-        if ( empty( $this->matched_variations ) ) {
-            return $thumbnail_id;
+    public function custom_ajax_search() {
+        if ( ! isset( $_REQUEST['query'] ) ) {
+            wp_send_json_error( array( 'message' => 'No search query provided' ) );
         }
-        
-        $post_id = (int) $post_id;
-        
-        if ( ! isset( $this->matched_variations[ $post_id ] ) ) {
-            return $thumbnail_id;
+
+        $query        = apply_filters( 'flatsome_ajax_search_query', sanitize_text_field( wp_unslash( $_REQUEST['query'] ) ) );
+        $wc_activated = function_exists( 'is_woocommerce_activated' ) ? is_woocommerce_activated() : class_exists( 'WooCommerce' );
+        $products     = array();
+        $posts        = array();
+        $sku_products = array();
+        $tag_products = array();
+        $suggestions  = array();
+
+        $args = array(
+            's'                   => $query,
+            'orderby'             => '',
+            'post_type'           => array(),
+            'post_status'         => 'publish',
+            'posts_per_page'      => 100,
+            'ignore_sticky_posts' => 1,
+            'post_password'       => '',
+            'suppress_filters'    => false,
+        );
+
+        $matched_variations = array();
+
+        if ( $wc_activated ) {
+            $matched_variations = $this->get_matched_variations( $query );
+            
+            if ( function_exists( 'flatsome_ajax_search_get_products' ) ) {
+                $products     = flatsome_ajax_search_get_products( 'product', $args );
+                $sku_products = get_theme_mod( 'search_by_sku', 0 ) ? flatsome_ajax_search_get_products( 'sku', $args ) : array();
+                $tag_products = get_theme_mod( 'search_by_product_tag', 0 ) ? flatsome_ajax_search_get_products( 'tag', $args ) : array();
+            }
         }
-        
-        $variation_id = $this->matched_variations[ $post_id ];
-        $variation_thumbnail = get_post_meta( $variation_id, '_thumbnail_id', true );
-        
-        if ( $variation_thumbnail && $variation_thumbnail > 0 ) {
-            return (int) $variation_thumbnail;
+
+        if ( ( ! $wc_activated || get_theme_mod( 'search_result', 1 ) ) && ! isset( $_REQUEST['product_cat'] ) ) {
+            if ( function_exists( 'flatsome_ajax_search_posts' ) ) {
+                $posts = flatsome_ajax_search_posts( $args );
+            }
         }
-        
-        return $thumbnail_id;
+
+        $results = array_merge( $products, $sku_products, $tag_products, $posts );
+
+        foreach ( $results as $key => $post ) {
+            if ( $wc_activated && ( $post->post_type === 'product' || $post->post_type === 'product_variation' ) ) {
+                $product = wc_get_product( $post );
+
+                if ( $product->get_parent_id() ) {
+                    $parent_product = wc_get_product( $product->get_parent_id() );
+                    if ( $parent_product ) {
+                        $visible = $parent_product->get_catalog_visibility() === 'visible' || $parent_product->get_catalog_visibility() === 'search';
+                        if ( $parent_product->get_status() !== 'publish' || ! $visible ) {
+                            unset( $results[ $key ] );
+                            continue;
+                        }
+                    }
+                }
+
+                $product_id = $product->get_id();
+                $image_id = get_post_thumbnail_id( $product_id );
+                
+                if ( isset( $matched_variations[ $product_id ] ) ) {
+                    $variation_id = $matched_variations[ $product_id ];
+                    $variation_image_id = get_post_meta( $variation_id, '_thumbnail_id', true );
+                    if ( $variation_image_id && $variation_image_id > 0 ) {
+                        $image_id = $variation_image_id;
+                    }
+                }
+                
+                $product_image = wp_get_attachment_image_src( $image_id );
+
+                $suggestions[] = array(
+                    'type'  => 'Product',
+                    'id'    => $product_id,
+                    'value' => $product->get_title(),
+                    'url'   => $product->get_permalink(),
+                    'img'   => $product_image ? $product_image[0] : '',
+                    'price' => $product->get_price_html(),
+                );
+            } else {
+                $suggestions[] = array(
+                    'type'  => 'Page',
+                    'id'    => $post->ID,
+                    'value' => get_the_title( $post->ID ),
+                    'url'   => get_the_permalink( $post->ID ),
+                    'img'   => get_the_post_thumbnail_url( $post->ID, 'thumbnail' ),
+                    'price' => '',
+                );
+            }
+        }
+
+        if ( empty( $results ) ) {
+            $no_results = $wc_activated ? __( 'No products found.', 'woocommerce' ) : __( 'No matches found', 'flatsome' );
+
+            $suggestions[] = array(
+                'id'    => -1,
+                'value' => $no_results,
+                'url'   => '',
+            );
+        }
+
+        if ( function_exists( 'flatsome_unique_suggestions' ) ) {
+            $suggestions = flatsome_unique_suggestions( array( $products, $sku_products, $tag_products ), $suggestions );
+        }
+
+        wp_send_json( array( 'suggestions' => $suggestions ) );
     }
     
     public function filter_search_where( $where, $query ) {
@@ -117,8 +190,6 @@ class WooVariationSearch {
 
         $search = $query->get('s');
         if ( empty( $search ) ) return $where;
-        
-        $this->prepare_variation_search( $search );
         
         $search_escaped = $wpdb->esc_like( $search );
         $search_escaped = esc_sql( $search_escaped );
@@ -142,12 +213,10 @@ class WooVariationSearch {
         )
         ";
 
-        if ( ! empty( $this->matched_variations ) ) {
-            add_filter( 'post_thumbnail_id', array( $this, 'filter_thumbnail_id' ), 20, 2 );
-        }
-
         return $where;
     }
 }
 
-WooVariationSearch::get_instance();
+add_action( 'after_setup_theme', function() {
+    WooVariationSearch::get_instance();
+}, 100 );
