@@ -234,7 +234,6 @@ class WooVariationSearch {
 
         if ( is_admin() && ! wp_doing_ajax() ) return $where;
         if ( ! $query->is_search() ) return $where;
-        if ( ! $query->is_main_query() && ! self::$is_flatsome_ajax ) return $where;
         if ( $query->get('post_type') !== 'product' ) return $where;
 
         $search = $query->get('s');
