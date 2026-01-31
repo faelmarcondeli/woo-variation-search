@@ -2,8 +2,8 @@
 /**
  * Plugin Name: WooCommerce Variation Search
  * Description: Integra a busca AJAX do tema Flatsome com variações de produtos WooCommerce
- * Version: 1.1
- * Author: Rafael Moreno
+ * Version: 1.2
+ * Author: Custom
  * Requires PHP: 7.4
  * Requires at least: 6.0
  * WC requires at least: 6.3
@@ -13,103 +13,114 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-/**
- * BUSCAR ATRIBUTO DE VARIAÇÃO USANDO A TABELA DE LOOKUP DO WOOCOMMERCE
- * Usa wp_wc_product_attributes_lookup para melhor performance
- */
-add_filter( 'posts_where', function( $where, $query ) {
-    global $wpdb;
+class WooVariationSearch {
+    
+    private static $instance = null;
+    private $matched_variations = array();
+    private $current_search_term = '';
+    
+    public static function get_instance() {
+        if ( self::$instance === null ) {
+            self::$instance = new self();
+        }
+        return self::$instance;
+    }
+    
+    private function __construct() {
+        add_filter( 'posts_where', array( $this, 'filter_search_where' ), 10, 2 );
+        add_filter( 'woocommerce_product_get_image_id', array( $this, 'filter_product_image' ), 20, 2 );
+    }
+    
+    public function filter_search_where( $where, $query ) {
+        global $wpdb;
 
-    if ( is_admin() || ! $query->is_search() ) return $where;
-    if ( $query->get('post_type') !== 'product' ) return $where;
+        if ( is_admin() || ! $query->is_search() ) return $where;
+        if ( $query->get('post_type') !== 'product' ) return $where;
 
-    $search = $wpdb->esc_like( $query->get('s') );
-    $search = esc_sql( $search );
+        $search = $query->get('s');
+        if ( empty( $search ) ) return $where;
+        
+        $this->current_search_term = sanitize_title( remove_accents( $search ) );
+        
+        $search_escaped = $wpdb->esc_like( $search );
+        $search_escaped = esc_sql( $search_escaped );
 
-    $lookup_table = $wpdb->prefix . 'wc_product_attributes_lookup';
-    $terms_table = $wpdb->prefix . 'terms';
+        $lookup_table = $wpdb->prefix . 'wc_product_attributes_lookup';
+        $terms_table = $wpdb->prefix . 'terms';
 
-    $where = "
-    AND (
-        {$wpdb->posts}.post_title LIKE '%{$search}%'
-        OR {$wpdb->posts}.ID IN (
-            SELECT DISTINCT pal.product_or_parent_id
+        $color_products = $wpdb->get_results( $wpdb->prepare(
+            "SELECT DISTINCT pal.product_or_parent_id as parent_id, pal.product_id as variation_id
             FROM {$lookup_table} pal
             INNER JOIN {$terms_table} t ON pal.term_id = t.term_id
             WHERE pal.taxonomy = 'pa_cores-de-tecidos'
+            AND pal.is_variation_attribute = 1
             AND (
-                t.name LIKE '%{$search}%'
-                OR t.slug LIKE '%{$search}%'
+                t.name LIKE %s
+                OR t.slug LIKE %s
+            )",
+            '%' . $wpdb->esc_like( $this->current_search_term ) . '%',
+            '%' . $wpdb->esc_like( $this->current_search_term ) . '%'
+        ) );
+        
+        $this->matched_variations = array();
+        $parent_ids = array();
+        
+        if ( $color_products ) {
+            foreach ( $color_products as $row ) {
+                $parent_ids[] = (int) $row->parent_id;
+                if ( ! isset( $this->matched_variations[ $row->parent_id ] ) ) {
+                    $this->matched_variations[ $row->parent_id ] = (int) $row->variation_id;
+                }
+            }
+        }
+
+        $where = "
+        AND (
+            {$wpdb->posts}.post_title LIKE '%{$search_escaped}%'
+            OR {$wpdb->posts}.ID IN (
+                SELECT DISTINCT pal.product_or_parent_id
+                FROM {$lookup_table} pal
+                INNER JOIN {$terms_table} t ON pal.term_id = t.term_id
+                WHERE pal.taxonomy = 'pa_cores-de-tecidos'
+                AND (
+                    t.name LIKE '%{$search_escaped}%'
+                    OR t.slug LIKE '%{$search_escaped}%'
+                )
             )
         )
-    )
-    ";
+        ";
 
-    return $where;
-}, 10, 2 );
-
-
-/**
- * USAR IMAGEM DA VARIAÇÃO ENCONTRADA
- * Busca a imagem da variação que corresponde ao termo pesquisado
- * 
- * IMPORTANTE: Só aplica a troca de imagem quando:
- * - Estamos em uma página de busca
- * - Estamos dentro do loop principal (não em widgets, headers, etc)
- * - O produto é variável
- * - O produto está na query principal de busca
- */
-add_filter( 'woocommerce_product_get_image_id', function( $image_id, $product ) {
-    global $wpdb, $wp_query;
-
-    if ( ! is_search() ) return $image_id;
-    if ( ! is_main_query() ) return $image_id;
-    if ( ! in_the_loop() ) return $image_id;
-    if ( ! $product->is_type('variable') ) return $image_id;
-
-    $product_id = $product->get_id();
-    
-    if ( ! isset( $wp_query->posts ) || ! is_array( $wp_query->posts ) ) {
-        return $image_id;
+        return $where;
     }
     
-    $search_product_ids = wp_list_pluck( $wp_query->posts, 'ID' );
-    if ( ! in_array( $product_id, $search_product_ids ) ) {
-        return $image_id;
-    }
-
-    $search_term = sanitize_title( remove_accents( get_search_query() ) );
-    
-    if ( empty( $search_term ) || strlen( $search_term ) < 2 ) {
-        return $image_id;
-    }
-
-    $lookup_table = $wpdb->prefix . 'wc_product_attributes_lookup';
-    $terms_table = $wpdb->prefix . 'terms';
-
-    $variation_id = $wpdb->get_var( $wpdb->prepare(
-        "SELECT pal.product_id
-        FROM {$lookup_table} pal
-        INNER JOIN {$terms_table} t ON pal.term_id = t.term_id
-        WHERE pal.product_or_parent_id = %d
-        AND pal.taxonomy = 'pa_cores-de-tecidos'
-        AND pal.is_variation_attribute = 1
-        AND (
-            t.name LIKE %s
-            OR t.slug LIKE %s
-        )
-        LIMIT 1",
-        $product_id,
-        '%' . $wpdb->esc_like( $search_term ) . '%',
-        '%' . $wpdb->esc_like( $search_term ) . '%'
-    ) );
-
-    if ( $variation_id ) {
+    public function filter_product_image( $image_id, $product ) {
+        if ( empty( $this->matched_variations ) ) {
+            return $image_id;
+        }
+        
+        if ( ! $product || ! is_object( $product ) ) {
+            return $image_id;
+        }
+        
+        if ( ! $product->is_type('variable') ) {
+            return $image_id;
+        }
+        
+        $product_id = $product->get_id();
+        
+        if ( ! isset( $this->matched_variations[ $product_id ] ) ) {
+            return $image_id;
+        }
+        
+        $variation_id = $this->matched_variations[ $product_id ];
         $variation_image = get_post_thumbnail_id( $variation_id );
+        
         if ( $variation_image ) {
             return $variation_image;
         }
+        
+        return $image_id;
     }
+}
 
-    return $image_id;
-}, 20, 2 );
+WooVariationSearch::get_instance();
