@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WooCommerce Variation Search
  * Description: Integra a busca AJAX do tema Flatsome com variações de produtos WooCommerce
- * Version: 1.2
+ * Version: 1.3
  * Author: Custom
  * Requires PHP: 7.4
  * Requires at least: 6.0
@@ -18,6 +18,7 @@ class WooVariationSearch {
     private static $instance = null;
     private $matched_variations = array();
     private $current_search_term = '';
+    private $is_active_search = false;
     
     public static function get_instance() {
         if ( self::$instance === null ) {
@@ -29,6 +30,21 @@ class WooVariationSearch {
     private function __construct() {
         add_filter( 'posts_where', array( $this, 'filter_search_where' ), 10, 2 );
         add_filter( 'woocommerce_product_get_image_id', array( $this, 'filter_product_image' ), 20, 2 );
+        add_action( 'loop_start', array( $this, 'on_loop_start' ) );
+        add_action( 'loop_end', array( $this, 'on_loop_end' ) );
+    }
+    
+    public function on_loop_start( $query ) {
+        if ( $query->is_main_query() && $query->is_search() ) {
+            $this->is_active_search = true;
+        }
+    }
+    
+    public function on_loop_end( $query ) {
+        if ( $query->is_main_query() && $query->is_search() ) {
+            $this->is_active_search = false;
+            $this->matched_variations = array();
+        }
     }
     
     public function filter_search_where( $where, $query ) {
@@ -36,6 +52,7 @@ class WooVariationSearch {
 
         if ( is_admin() || ! $query->is_search() ) return $where;
         if ( $query->get('post_type') !== 'product' ) return $where;
+        if ( ! $query->is_main_query() ) return $where;
 
         $search = $query->get('s');
         if ( empty( $search ) ) return $where;
@@ -63,11 +80,9 @@ class WooVariationSearch {
         ) );
         
         $this->matched_variations = array();
-        $parent_ids = array();
         
         if ( $color_products ) {
             foreach ( $color_products as $row ) {
-                $parent_ids[] = (int) $row->parent_id;
                 if ( ! isset( $this->matched_variations[ $row->parent_id ] ) ) {
                     $this->matched_variations[ $row->parent_id ] = (int) $row->variation_id;
                 }
@@ -94,11 +109,19 @@ class WooVariationSearch {
     }
     
     public function filter_product_image( $image_id, $product ) {
+        if ( ! $this->is_active_search ) {
+            return $image_id;
+        }
+        
         if ( empty( $this->matched_variations ) ) {
             return $image_id;
         }
         
         if ( ! $product || ! is_object( $product ) ) {
+            return $image_id;
+        }
+        
+        if ( ! method_exists( $product, 'is_type' ) || ! method_exists( $product, 'get_id' ) ) {
             return $image_id;
         }
         
@@ -108,14 +131,23 @@ class WooVariationSearch {
         
         $product_id = $product->get_id();
         
+        if ( ! $product_id || $product_id <= 0 ) {
+            return $image_id;
+        }
+        
         if ( ! isset( $this->matched_variations[ $product_id ] ) ) {
             return $image_id;
         }
         
         $variation_id = $this->matched_variations[ $product_id ];
+        
+        if ( ! $variation_id || $variation_id <= 0 ) {
+            return $image_id;
+        }
+        
         $variation_image = get_post_thumbnail_id( $variation_id );
         
-        if ( $variation_image ) {
+        if ( $variation_image && $variation_image > 0 ) {
             return $variation_image;
         }
         
