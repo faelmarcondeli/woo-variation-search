@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WooCommerce Variation Search
  * Description: Integra a busca AJAX do tema Flatsome com variações de produtos WooCommerce
- * Version: 1.4
+ * Version: 1.5
  * Author: Custom
  * Requires PHP: 7.4
  * Requires at least: 6.0
@@ -17,8 +17,7 @@ class WooVariationSearch {
     
     private static $instance = null;
     private $matched_variations = array();
-    private $is_variation_search = false;
-    private $processed_products = array();
+    private $current_search_term = '';
     
     public static function get_instance() {
         if ( self::$instance === null ) {
@@ -29,34 +28,34 @@ class WooVariationSearch {
     
     private function __construct() {
         add_filter( 'posts_where', array( $this, 'filter_search_where' ), 10, 2 );
-        
-        add_action( 'wp_ajax_flatsome_ajax_search_products', array( $this, 'before_flatsome_search' ), 1 );
-        add_action( 'wp_ajax_nopriv_flatsome_ajax_search_products', array( $this, 'before_flatsome_search' ), 1 );
-        
-        add_filter( 'flatsome_ajax_search_products_args', array( $this, 'modify_search_args' ), 10, 2 );
+        add_filter( 'flatsome_ajax_search_function', array( $this, 'custom_flatsome_search' ), 10, 4 );
     }
     
-    public function before_flatsome_search() {
-        $search = isset( $_REQUEST['query'] ) ? sanitize_text_field( $_REQUEST['query'] ) : '';
+    public function custom_flatsome_search( $query_function, $search_query, $args, $defaults ) {
+        if ( ! isset( $args['post_type'] ) || $args['post_type'] !== 'product' ) {
+            return $query_function;
+        }
         
+        $search = isset( $args['s'] ) ? $args['s'] : '';
         if ( empty( $search ) ) {
-            return;
+            return $query_function;
         }
         
         $this->prepare_variation_search( $search );
         
         if ( ! empty( $this->matched_variations ) ) {
-            $this->is_variation_search = true;
-            add_filter( 'woocommerce_product_get_image_id', array( $this, 'filter_product_image' ), 20, 2 );
+            add_filter( 'post_thumbnail_id', array( $this, 'filter_thumbnail_id' ), 20, 2 );
         }
+        
+        return $query_function;
     }
     
     private function prepare_variation_search( $search ) {
         global $wpdb;
         
-        $search_term = sanitize_title( remove_accents( $search ) );
+        $this->current_search_term = sanitize_title( remove_accents( $search ) );
         
-        if ( empty( $search_term ) ) {
+        if ( empty( $this->current_search_term ) ) {
             return;
         }
         
@@ -73,8 +72,8 @@ class WooVariationSearch {
                 t.name LIKE %s
                 OR t.slug LIKE %s
             )",
-            '%' . $wpdb->esc_like( $search_term ) . '%',
-            '%' . $wpdb->esc_like( $search_term ) . '%'
+            '%' . $wpdb->esc_like( $this->current_search_term ) . '%',
+            '%' . $wpdb->esc_like( $this->current_search_term ) . '%'
         ) );
         
         $this->matched_variations = array();
@@ -88,31 +87,25 @@ class WooVariationSearch {
         }
     }
     
-    public function modify_search_args( $args, $search_query ) {
-        global $wpdb;
-        
-        if ( empty( $search_query ) ) {
-            return $args;
+    public function filter_thumbnail_id( $thumbnail_id, $post_id ) {
+        if ( empty( $this->matched_variations ) ) {
+            return $thumbnail_id;
         }
         
-        $this->prepare_variation_search( $search_query );
+        $post_id = (int) $post_id;
         
-        if ( ! empty( $this->matched_variations ) ) {
-            $parent_ids = array_keys( $this->matched_variations );
-            
-            if ( isset( $args['post__in'] ) && ! empty( $args['post__in'] ) ) {
-                $args['post__in'] = array_unique( array_merge( $args['post__in'], $parent_ids ) );
-            } else {
-                if ( ! isset( $args['post__in'] ) ) {
-                    $args['post__in'] = $parent_ids;
-                }
-            }
-            
-            $this->is_variation_search = true;
-            add_filter( 'woocommerce_product_get_image_id', array( $this, 'filter_product_image' ), 20, 2 );
+        if ( ! isset( $this->matched_variations[ $post_id ] ) ) {
+            return $thumbnail_id;
         }
         
-        return $args;
+        $variation_id = $this->matched_variations[ $post_id ];
+        $variation_thumbnail = get_post_meta( $variation_id, '_thumbnail_id', true );
+        
+        if ( $variation_thumbnail && $variation_thumbnail > 0 ) {
+            return (int) $variation_thumbnail;
+        }
+        
+        return $thumbnail_id;
     }
     
     public function filter_search_where( $where, $query ) {
@@ -150,54 +143,10 @@ class WooVariationSearch {
         ";
 
         if ( ! empty( $this->matched_variations ) ) {
-            $this->is_variation_search = true;
-            add_filter( 'woocommerce_product_get_image_id', array( $this, 'filter_product_image' ), 20, 2 );
+            add_filter( 'post_thumbnail_id', array( $this, 'filter_thumbnail_id' ), 20, 2 );
         }
 
         return $where;
-    }
-    
-    public function filter_product_image( $image_id, $product ) {
-        if ( ! $this->is_variation_search ) {
-            return $image_id;
-        }
-        
-        if ( empty( $this->matched_variations ) ) {
-            return $image_id;
-        }
-        
-        if ( ! $product || ! is_object( $product ) ) {
-            return $image_id;
-        }
-        
-        if ( ! method_exists( $product, 'is_type' ) || ! method_exists( $product, 'get_id' ) ) {
-            return $image_id;
-        }
-        
-        if ( ! $product->is_type('variable') ) {
-            return $image_id;
-        }
-        
-        $product_id = $product->get_id();
-        
-        if ( isset( $this->processed_products[ $product_id ] ) ) {
-            return $this->processed_products[ $product_id ];
-        }
-        
-        if ( ! isset( $this->matched_variations[ $product_id ] ) ) {
-            return $image_id;
-        }
-        
-        $variation_id = $this->matched_variations[ $product_id ];
-        $variation_image = get_post_thumbnail_id( $variation_id );
-        
-        if ( $variation_image && $variation_image > 0 ) {
-            $this->processed_products[ $product_id ] = $variation_image;
-            return $variation_image;
-        }
-        
-        $this->processed_products[ $product_id ] = $image_id;
-        return $image_id;
     }
 }
 
