@@ -27,7 +27,7 @@ class WooVariationSearch {
     
     private function __construct() {
         add_action( 'template_redirect', array( $this, 'redirect_product_search' ) );
-        add_action( 'woocommerce_product_query', array( $this, 'modify_shop_search_query' ), 10, 2 );
+        add_action( 'pre_get_posts', array( $this, 'modify_shop_search_query' ), 99 );
         
         remove_action( 'wp_ajax_flatsome_ajax_search_products', 'flatsome_ajax_search' );
         remove_action( 'wp_ajax_nopriv_flatsome_ajax_search_products', 'flatsome_ajax_search' );
@@ -35,8 +35,16 @@ class WooVariationSearch {
         add_action( 'wp_ajax_nopriv_flatsome_ajax_search_products', array( $this, 'custom_ajax_search' ), 5 );
     }
     
-    public function modify_shop_search_query( $query, $wc_query ) {
-        if ( ! is_shop() && ! is_product_category() && ! is_product_tag() ) {
+    public function modify_shop_search_query( $query ) {
+        if ( is_admin() ) {
+            return;
+        }
+        
+        if ( wp_doing_ajax() ) {
+            return;
+        }
+        
+        if ( ! $query->is_main_query() ) {
             return;
         }
         
@@ -46,36 +54,37 @@ class WooVariationSearch {
             return;
         }
         
-        $matched_variations = $this->get_matched_variations( $search );
+        $post_type = $query->get( 'post_type' );
+        $is_product_query = ( $post_type === 'product' || ( is_array( $post_type ) && in_array( 'product', $post_type, true ) ) );
         
-        if ( empty( $matched_variations ) ) {
+        if ( ! $is_product_query && ! is_shop() ) {
             return;
         }
         
-        $color_product_ids = array_keys( $matched_variations );
+        $matched_variations = $this->get_matched_variations( $search );
         
-        $current_post_in = $query->get( 'post__in' );
+        $color_product_ids = ! empty( $matched_variations ) ? array_keys( $matched_variations ) : array();
         
-        if ( ! empty( $current_post_in ) ) {
-            $merged_ids = array_unique( array_merge( $current_post_in, $color_product_ids ) );
-        } else {
-            global $wpdb;
-            $search_escaped = '%' . $wpdb->esc_like( $search ) . '%';
-            
-            $title_matches = $wpdb->get_col( $wpdb->prepare(
-                "SELECT ID FROM {$wpdb->posts} 
-                WHERE post_type = 'product' 
-                AND post_status = 'publish' 
-                AND post_title LIKE %s",
-                $search_escaped
-            ) );
-            
-            $merged_ids = array_unique( array_merge( $title_matches, $color_product_ids ) );
-        }
+        global $wpdb;
+        $search_escaped = '%' . $wpdb->esc_like( $search ) . '%';
+        
+        $title_matches = $wpdb->get_col( $wpdb->prepare(
+            "SELECT ID FROM {$wpdb->posts} 
+            WHERE post_type = 'product' 
+            AND post_status = 'publish' 
+            AND post_title LIKE %s",
+            $search_escaped
+        ) );
+        
+        $merged_ids = array_unique( array_merge( $title_matches, $color_product_ids ) );
         
         if ( ! empty( $merged_ids ) ) {
+            $query->set( 'post_type', 'product' );
             $query->set( 'post__in', $merged_ids );
             $query->set( 's', '' );
+            $query->set( 'orderby', 'post__in' );
+        } else {
+            $query->set( 'post__in', array( 0 ) );
         }
     }
     
