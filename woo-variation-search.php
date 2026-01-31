@@ -52,15 +52,37 @@ add_filter( 'posts_where', function( $where, $query ) {
 /**
  * USAR IMAGEM DA VARIAÇÃO ENCONTRADA
  * Busca a imagem da variação que corresponde ao termo pesquisado
+ * 
+ * IMPORTANTE: Só aplica a troca de imagem quando:
+ * - Estamos em uma página de busca
+ * - Estamos dentro do loop principal (não em widgets, headers, etc)
+ * - O produto é variável
+ * - O produto está na query principal de busca
  */
 add_filter( 'woocommerce_product_get_image_id', function( $image_id, $product ) {
-    global $wpdb;
+    global $wpdb, $wp_query;
 
     if ( ! is_search() ) return $image_id;
+    if ( ! is_main_query() ) return $image_id;
+    if ( ! in_the_loop() ) return $image_id;
     if ( ! $product->is_type('variable') ) return $image_id;
 
-    $search_term = sanitize_title( remove_accents( get_search_query() ) );
     $product_id = $product->get_id();
+    
+    if ( ! isset( $wp_query->posts ) || ! is_array( $wp_query->posts ) ) {
+        return $image_id;
+    }
+    
+    $search_product_ids = wp_list_pluck( $wp_query->posts, 'ID' );
+    if ( ! in_array( $product_id, $search_product_ids ) ) {
+        return $image_id;
+    }
+
+    $search_term = sanitize_title( remove_accents( get_search_query() ) );
+    
+    if ( empty( $search_term ) || strlen( $search_term ) < 2 ) {
+        return $image_id;
+    }
 
     $lookup_table = $wpdb->prefix . 'wc_product_attributes_lookup';
     $terms_table = $wpdb->prefix . 'terms';
