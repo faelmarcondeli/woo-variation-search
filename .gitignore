@@ -1,0 +1,19 @@
+# PHP
+vendor/
+composer.lock
+*.log
+*.cache
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Replit
+.cache/
+.local/
