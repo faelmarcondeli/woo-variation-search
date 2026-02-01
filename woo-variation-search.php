@@ -406,14 +406,13 @@ class WooVariationSearch {
             }
         }
         
-        $terms = get_terms( array(
+        $all_color_terms = get_terms( array(
             'taxonomy'   => 'pa_cores-de-tecidos',
             'hide_empty' => false,
-            'search'     => $search_original,
         ) );
         
-        if ( ! is_wp_error( $terms ) && ! empty( $terms ) ) {
-            foreach ( $terms as $term ) {
+        if ( ! is_wp_error( $all_color_terms ) && ! empty( $all_color_terms ) ) {
+            foreach ( $all_color_terms as $term ) {
                 $term_name_lower = mb_strtolower( $term->name );
                 $term_slug_lower = mb_strtolower( $term->slug );
                 
