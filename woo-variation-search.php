@@ -578,6 +578,12 @@ class WooVariationSearch {
     }
     
     public function custom_ajax_search() {
+        header( 'X-LiteSpeed-Cache-Control: no-cache' );
+        header( 'X-LiteSpeed-Purge: no' );
+        header( 'Cache-Control: no-cache, no-store, must-revalidate, private' );
+        header( 'Pragma: no-cache' );
+        header( 'Expires: 0' );
+        
         global $post;
         $original_post = $post;
         
