@@ -359,9 +359,10 @@ class WooVariationSearch {
     private function get_matched_variations( $search ) {
         global $wpdb;
         
-        $search_term = sanitize_title( remove_accents( $search ) );
+        $search_original = trim( $search );
+        $search_sanitized = sanitize_title( remove_accents( $search ) );
         
-        if ( empty( $search_term ) ) {
+        if ( empty( $search_original ) ) {
             return array();
         }
         
@@ -376,10 +377,14 @@ class WooVariationSearch {
             AND pal.is_variation_attribute = 1
             AND (
                 t.name LIKE %s
+                OR t.name LIKE %s
+                OR t.slug LIKE %s
                 OR t.slug LIKE %s
             )",
-            '%' . $wpdb->esc_like( $search_term ) . '%',
-            '%' . $wpdb->esc_like( $search_term ) . '%'
+            '%' . $wpdb->esc_like( $search_original ) . '%',
+            '%' . $wpdb->esc_like( $search_sanitized ) . '%',
+            '%' . $wpdb->esc_like( $search_original ) . '%',
+            '%' . $wpdb->esc_like( $search_sanitized ) . '%'
         ) );
         
         $matched = array();
