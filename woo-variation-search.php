@@ -521,81 +521,66 @@ class WooVariationSearch {
         );
 
         $matched_variations = $this->get_matched_variations( $query );
-
-        if ( $wc_activated ) {
-            if ( function_exists( 'flatsome_ajax_search_get_products' ) ) {
-                $products     = flatsome_ajax_search_get_products( 'product', $args );
-                wp_reset_postdata();
-                
-                $sku_products = get_theme_mod( 'search_by_sku', 0 ) ? flatsome_ajax_search_get_products( 'sku', $args ) : array();
-                wp_reset_postdata();
-                
-                $tag_products = get_theme_mod( 'search_by_product_tag', 0 ) ? flatsome_ajax_search_get_products( 'tag', $args ) : array();
-                wp_reset_postdata();
-            }
-            
-            if ( ! empty( $matched_variations ) ) {
-                $variation_parent_ids = array_keys( $matched_variations );
-                $variation_args = array(
-                    'post_type'           => 'product',
-                    'post_status'         => 'publish',
-                    'posts_per_page'      => 50,
-                    'post__in'            => $variation_parent_ids,
-                    'ignore_sticky_posts' => 1,
-                    'suppress_filters'    => true,
-                );
-                $variation_products = get_posts( $variation_args );
-                wp_reset_postdata();
-                
-                if ( $variation_products ) {
-                    $products = array_merge( $products, $variation_products );
-                }
-            }
-        }
-
-        if ( ( ! $wc_activated || get_theme_mod( 'search_result', 1 ) ) && ! isset( $_REQUEST['product_cat'] ) ) {
-            if ( function_exists( 'flatsome_ajax_search_posts' ) ) {
-                $posts = flatsome_ajax_search_posts( $args );
-                wp_reset_postdata();
-            }
-        }
-
-        $results = array_merge( $products, $sku_products, $tag_products, $posts );
         $added_ids = array();
-        $variation_parent_ids = ! empty( $matched_variations ) ? array_keys( $matched_variations ) : array();
         $query_lower = mb_strtolower( $query );
 
-        foreach ( $results as $key => $result_post ) {
-            if ( $wc_activated && ( $result_post->post_type === 'product' || $result_post->post_type === 'product_variation' ) ) {
-                $product = wc_get_product( $result_post->ID );
-                
-                if ( ! $product ) {
+        if ( $wc_activated ) {
+            global $wpdb;
+            $search_escaped = '%' . $wpdb->esc_like( $query ) . '%';
+            
+            $title_product_ids = $wpdb->get_col( $wpdb->prepare(
+                "SELECT ID FROM {$wpdb->posts} 
+                WHERE post_type = 'product' 
+                AND post_status = 'publish' 
+                AND post_title LIKE %s
+                LIMIT 50",
+                $search_escaped
+            ) );
+            
+            $color_product_ids = ! empty( $matched_variations ) ? array_keys( $matched_variations ) : array();
+            
+            $all_product_ids = array_unique( array_merge( $title_product_ids, $color_product_ids ) );
+            
+            foreach ( $all_product_ids as $product_id ) {
+                if ( in_array( $product_id, $added_ids, true ) ) {
                     continue;
                 }
-
-                if ( $product->get_parent_id() ) {
-                    $parent_product = wc_get_product( $product->get_parent_id() );
-                    if ( $parent_product ) {
-                        $visible = $parent_product->get_catalog_visibility() === 'visible' || $parent_product->get_catalog_visibility() === 'search';
-                        if ( $parent_product->get_status() !== 'publish' || ! $visible ) {
+                
+                $product = wc_get_product( $product_id );
+                
+                if ( ! $product || $product->get_status() !== 'publish' ) {
+                    continue;
+                }
+                
+                $is_color_match = isset( $matched_variations[ $product_id ] );
+                
+                if ( $is_color_match ) {
+                    $variation_id = $matched_variations[ $product_id ];
+                    $variation = wc_get_product( $variation_id );
+                    if ( ! $variation || ! $this->is_variation_in_stock( $variation ) ) {
+                        continue;
+                    }
+                } else {
+                    if ( $product->is_type( 'variable' ) ) {
+                        $children = $product->get_children();
+                        $has_stock = false;
+                        foreach ( $children as $child_id ) {
+                            $child = wc_get_product( $child_id );
+                            if ( $this->is_variation_in_stock( $child ) ) {
+                                $has_stock = true;
+                                break;
+                            }
+                        }
+                        if ( ! $has_stock ) {
+                            continue;
+                        }
+                    } else {
+                        if ( $product->get_stock_status() !== 'instock' ) {
                             continue;
                         }
                     }
                 }
-
-                $product_id = $product->get_id();
                 
-                $is_color_match = in_array( $product_id, $variation_parent_ids, true );
-                $title_lower = mb_strtolower( $product->get_title() );
-                $is_title_match = strpos( $title_lower, $query_lower ) !== false;
-                
-                if ( ! $is_color_match && ! $is_title_match ) {
-                    continue;
-                }
-                
-                if ( in_array( $product_id, $added_ids, true ) ) {
-                    continue;
-                }
                 $added_ids[] = $product_id;
                 
                 $img_url = $this->get_variation_image_url( $product_id, $matched_variations );
@@ -609,26 +594,39 @@ class WooVariationSearch {
                     'img'   => $img_url,
                     'price' => $product->get_price_html(),
                 );
-            } else {
-                if ( in_array( $result_post->ID, $added_ids, true ) ) {
-                    continue;
+                
+                if ( count( $suggestions ) >= 10 ) {
+                    break;
                 }
+            }
+        }
+
+        if ( ( ! $wc_activated || get_theme_mod( 'search_result', 1 ) ) && ! isset( $_REQUEST['product_cat'] ) ) {
+            if ( function_exists( 'flatsome_ajax_search_posts' ) ) {
+                $posts = flatsome_ajax_search_posts( $args );
+                wp_reset_postdata();
                 
-                $title_lower = mb_strtolower( get_the_title( $result_post->ID ) );
-                if ( strpos( $title_lower, $query_lower ) === false ) {
-                    continue;
+                foreach ( $posts as $result_post ) {
+                    if ( in_array( $result_post->ID, $added_ids, true ) ) {
+                        continue;
+                    }
+                    
+                    $title_lower = mb_strtolower( get_the_title( $result_post->ID ) );
+                    if ( strpos( $title_lower, $query_lower ) === false ) {
+                        continue;
+                    }
+                    
+                    $added_ids[] = $result_post->ID;
+                    
+                    $suggestions[] = array(
+                        'type'  => 'Page',
+                        'id'    => $result_post->ID,
+                        'value' => get_the_title( $result_post->ID ),
+                        'url'   => get_the_permalink( $result_post->ID ),
+                        'img'   => get_the_post_thumbnail_url( $result_post->ID, 'thumbnail' ),
+                        'price' => '',
+                    );
                 }
-                
-                $added_ids[] = $result_post->ID;
-                
-                $suggestions[] = array(
-                    'type'  => 'Page',
-                    'id'    => $result_post->ID,
-                    'value' => get_the_title( $result_post->ID ),
-                    'url'   => get_the_permalink( $result_post->ID ),
-                    'img'   => get_the_post_thumbnail_url( $result_post->ID, 'thumbnail' ),
-                    'price' => '',
-                );
             }
         }
 
