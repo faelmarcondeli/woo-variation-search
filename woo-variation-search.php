@@ -245,6 +245,7 @@ class WooVariationSearch {
         }
         
         $matched_variations = $this->get_matched_variations( $search );
+        $this->matched_variations_cache = $matched_variations;
         $this->color_product_ids = ! empty( $matched_variations ) ? array_keys( $matched_variations ) : array();
         
         global $wpdb;
@@ -368,7 +369,12 @@ class WooVariationSearch {
         
         if ( $color_products ) {
             foreach ( $color_products as $row ) {
-                if ( ! isset( $matched[ $row->parent_id ] ) ) {
+                if ( isset( $matched[ $row->parent_id ] ) ) {
+                    continue;
+                }
+                
+                $variation = wc_get_product( (int) $row->variation_id );
+                if ( $variation && $variation->is_in_stock() ) {
                     $matched[ $row->parent_id ] = (int) $row->variation_id;
                 }
             }
