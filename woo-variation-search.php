@@ -78,16 +78,16 @@ class WooVariationSearch {
             return $permalink;
         }
         
-        $attributes = $variation->get_variation_attributes();
+        $attributes = $variation->get_attributes();
         
         if ( empty( $attributes ) ) {
             return $permalink;
         }
         
         $query_args = array();
-        foreach ( $attributes as $attribute => $value ) {
-            if ( ! empty( $value ) ) {
-                $query_args[ $attribute ] = $value;
+        foreach ( $attributes as $attribute_name => $attribute_value ) {
+            if ( ! empty( $attribute_value ) ) {
+                $query_args[ 'attribute_' . $attribute_name ] = $attribute_value;
             }
         }
         
@@ -298,16 +298,16 @@ class WooVariationSearch {
             return $permalink;
         }
         
-        $attributes = $variation->get_variation_attributes();
+        $attributes = $variation->get_attributes();
         
         if ( empty( $attributes ) ) {
             return $permalink;
         }
         
         $query_args = array();
-        foreach ( $attributes as $attribute => $value ) {
-            if ( ! empty( $value ) ) {
-                $query_args[ $attribute ] = $value;
+        foreach ( $attributes as $attribute_name => $attribute_value ) {
+            if ( ! empty( $attribute_value ) ) {
+                $query_args[ 'attribute_' . $attribute_name ] = $attribute_value;
             }
         }
         
