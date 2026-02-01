@@ -57,7 +57,50 @@ class WooVariationSearch {
             $this->is_search_results = true;
             add_filter( 'woocommerce_product_get_image', array( $this, 'filter_product_image_html' ), 999, 5 );
             add_filter( 'woocommerce_loop_product_link', array( $this, 'filter_product_link' ), 999, 2 );
+            add_filter( 'post_type_link', array( $this, 'filter_product_permalink' ), 999, 2 );
         }
+    }
+    
+    public function filter_product_permalink( $permalink, $post ) {
+        if ( ! $this->is_search_results ) {
+            return $permalink;
+        }
+        
+        if ( $post->post_type !== 'product' ) {
+            return $permalink;
+        }
+        
+        $product_id = $post->ID;
+        
+        if ( ! isset( $this->matched_variations_cache[ $product_id ] ) ) {
+            return $permalink;
+        }
+        
+        $variation_id = $this->matched_variations_cache[ $product_id ];
+        $variation = wc_get_product( $variation_id );
+        
+        if ( ! $variation || ! $variation->is_type( 'variation' ) ) {
+            return $permalink;
+        }
+        
+        $attributes = $variation->get_attributes();
+        
+        if ( empty( $attributes ) ) {
+            return $permalink;
+        }
+        
+        $query_args = array();
+        foreach ( $attributes as $attribute_name => $attribute_value ) {
+            if ( ! empty( $attribute_value ) ) {
+                $query_args[ 'attribute_' . $attribute_name ] = $attribute_value;
+            }
+        }
+        
+        if ( ! empty( $query_args ) ) {
+            $permalink = add_query_arg( $query_args, $permalink );
+        }
+        
+        return $permalink;
     }
     
     public function filter_product_link( $permalink, $product ) {
