@@ -366,38 +366,85 @@ class WooVariationSearch {
             return array();
         }
         
+        $matched = array();
+        
         $lookup_table = $wpdb->prefix . 'wc_product_attributes_lookup';
         $terms_table = $wpdb->prefix . 'terms';
         
-        $color_products = $wpdb->get_results( $wpdb->prepare(
-            "SELECT DISTINCT pal.product_or_parent_id as parent_id, pal.product_id as variation_id
-            FROM {$lookup_table} pal
-            INNER JOIN {$terms_table} t ON pal.term_id = t.term_id
-            WHERE pal.taxonomy = 'pa_cores-de-tecidos'
-            AND pal.is_variation_attribute = 1
-            AND (
-                LOWER(t.name) LIKE %s
-                OR LOWER(t.name) LIKE %s
-                OR t.slug LIKE %s
-                OR t.slug LIKE %s
-            )",
-            '%' . $wpdb->esc_like( $search_original ) . '%',
-            '%' . $wpdb->esc_like( $search_sanitized ) . '%',
-            '%' . $wpdb->esc_like( $search_original ) . '%',
-            '%' . $wpdb->esc_like( $search_sanitized ) . '%'
+        $table_exists = $wpdb->get_var( "SHOW TABLES LIKE '{$lookup_table}'" );
+        
+        if ( $table_exists ) {
+            $color_products = $wpdb->get_results( $wpdb->prepare(
+                "SELECT DISTINCT pal.product_or_parent_id as parent_id, pal.product_id as variation_id
+                FROM {$lookup_table} pal
+                INNER JOIN {$terms_table} t ON pal.term_id = t.term_id
+                WHERE pal.taxonomy = 'pa_cores-de-tecidos'
+                AND pal.is_variation_attribute = 1
+                AND (
+                    LOWER(t.name) LIKE %s
+                    OR LOWER(t.name) LIKE %s
+                    OR t.slug LIKE %s
+                    OR t.slug LIKE %s
+                )",
+                '%' . $wpdb->esc_like( $search_original ) . '%',
+                '%' . $wpdb->esc_like( $search_sanitized ) . '%',
+                '%' . $wpdb->esc_like( $search_original ) . '%',
+                '%' . $wpdb->esc_like( $search_sanitized ) . '%'
+            ) );
+            
+            if ( $color_products ) {
+                foreach ( $color_products as $row ) {
+                    if ( isset( $matched[ $row->parent_id ] ) ) {
+                        continue;
+                    }
+                    
+                    $variation = wc_get_product( (int) $row->variation_id );
+                    if ( $variation && $this->is_variation_in_stock( $variation ) ) {
+                        $matched[ $row->parent_id ] = (int) $row->variation_id;
+                    }
+                }
+            }
+        }
+        
+        $terms = get_terms( array(
+            'taxonomy'   => 'pa_cores-de-tecidos',
+            'hide_empty' => false,
+            'search'     => $search_original,
         ) );
         
-        $matched = array();
-        
-        if ( $color_products ) {
-            foreach ( $color_products as $row ) {
-                if ( isset( $matched[ $row->parent_id ] ) ) {
+        if ( ! is_wp_error( $terms ) && ! empty( $terms ) ) {
+            foreach ( $terms as $term ) {
+                $term_name_lower = mb_strtolower( $term->name );
+                $term_slug_lower = mb_strtolower( $term->slug );
+                
+                if ( strpos( $term_name_lower, $search_original ) === false && 
+                     strpos( $term_slug_lower, $search_original ) === false &&
+                     strpos( $term_slug_lower, $search_sanitized ) === false ) {
                     continue;
                 }
                 
-                $variation = wc_get_product( (int) $row->variation_id );
-                if ( $variation && $this->is_variation_in_stock( $variation ) ) {
-                    $matched[ $row->parent_id ] = (int) $row->variation_id;
+                $variations = $wpdb->get_results( $wpdb->prepare(
+                    "SELECT p.ID as variation_id, p.post_parent as parent_id
+                    FROM {$wpdb->posts} p
+                    INNER JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id
+                    WHERE p.post_type = 'product_variation'
+                    AND p.post_status = 'publish'
+                    AND pm.meta_key = 'attribute_pa_cores-de-tecidos'
+                    AND pm.meta_value = %s",
+                    $term->slug
+                ) );
+                
+                if ( $variations ) {
+                    foreach ( $variations as $row ) {
+                        if ( isset( $matched[ $row->parent_id ] ) ) {
+                            continue;
+                        }
+                        
+                        $variation = wc_get_product( (int) $row->variation_id );
+                        if ( $variation && $this->is_variation_in_stock( $variation ) ) {
+                            $matched[ $row->parent_id ] = (int) $row->variation_id;
+                        }
+                    }
                 }
             }
         }
