@@ -406,12 +406,16 @@ class WooVariationSearch {
             }
         }
         
-        $all_color_terms = get_terms( array(
-            'taxonomy'   => 'pa_cores-de-tecidos',
-            'hide_empty' => false,
-        ) );
+        $term_taxonomy_table = $wpdb->prefix . 'term_taxonomy';
         
-        if ( ! is_wp_error( $all_color_terms ) && ! empty( $all_color_terms ) ) {
+        $all_color_terms = $wpdb->get_results(
+            "SELECT t.term_id, t.name, t.slug 
+            FROM {$terms_table} t
+            INNER JOIN {$term_taxonomy_table} tt ON t.term_id = tt.term_id
+            WHERE tt.taxonomy = 'pa_cores-de-tecidos'"
+        );
+        
+        if ( $all_color_terms ) {
             foreach ( $all_color_terms as $term ) {
                 $term_name_lower = mb_strtolower( $term->name );
                 $term_slug_lower = mb_strtolower( $term->slug );
@@ -428,7 +432,7 @@ class WooVariationSearch {
                     INNER JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id
                     WHERE p.post_type = 'product_variation'
                     AND p.post_status = 'publish'
-                    AND (pm.meta_key = 'attribute_pa_cores-de-tecidos' OR pm.meta_key = 'pa_cores-de-tecidos')
+                    AND pm.meta_key = 'attribute_pa_cores-de-tecidos'
                     AND (pm.meta_value = %s OR pm.meta_value = %s)",
                     $term->slug,
                     $term->name
