@@ -119,6 +119,13 @@ class WooVariationSearch {
             $query->set( 'post__in', $merged_ids );
             $query->set( 's', '' );
             $query->set( 'orderby', 'post__in' );
+            
+            add_filter( 'get_search_query', function( $s ) use ( $search ) {
+                if ( empty( $s ) && ! empty( $search ) ) {
+                    return $search;
+                }
+                return $s;
+            } );
         }
     }
     
