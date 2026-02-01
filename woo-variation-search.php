@@ -562,6 +562,8 @@ class WooVariationSearch {
 
         $results = array_merge( $products, $sku_products, $tag_products, $posts );
         $added_ids = array();
+        $variation_parent_ids = ! empty( $matched_variations ) ? array_keys( $matched_variations ) : array();
+        $query_lower = mb_strtolower( $query );
 
         foreach ( $results as $key => $result_post ) {
             if ( $wc_activated && ( $result_post->post_type === 'product' || $result_post->post_type === 'product_variation' ) ) {
@@ -583,6 +585,14 @@ class WooVariationSearch {
 
                 $product_id = $product->get_id();
                 
+                $is_color_match = in_array( $product_id, $variation_parent_ids, true );
+                $title_lower = mb_strtolower( $product->get_title() );
+                $is_title_match = strpos( $title_lower, $query_lower ) !== false;
+                
+                if ( ! $is_color_match && ! $is_title_match ) {
+                    continue;
+                }
+                
                 if ( in_array( $product_id, $added_ids, true ) ) {
                     continue;
                 }
@@ -603,6 +613,12 @@ class WooVariationSearch {
                 if ( in_array( $result_post->ID, $added_ids, true ) ) {
                     continue;
                 }
+                
+                $title_lower = mb_strtolower( get_the_title( $result_post->ID ) );
+                if ( strpos( $title_lower, $query_lower ) === false ) {
+                    continue;
+                }
+                
                 $added_ids[] = $result_post->ID;
                 
                 $suggestions[] = array(
