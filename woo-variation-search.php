@@ -428,9 +428,10 @@ class WooVariationSearch {
                     INNER JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id
                     WHERE p.post_type = 'product_variation'
                     AND p.post_status = 'publish'
-                    AND pm.meta_key = 'attribute_pa_cores-de-tecidos'
-                    AND pm.meta_value = %s",
-                    $term->slug
+                    AND (pm.meta_key = 'attribute_pa_cores-de-tecidos' OR pm.meta_key = 'pa_cores-de-tecidos')
+                    AND (pm.meta_value = %s OR pm.meta_value = %s)",
+                    $term->slug,
+                    $term->name
                 ) );
                 
                 if ( $variations ) {
