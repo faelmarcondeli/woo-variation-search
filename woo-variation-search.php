@@ -561,23 +561,8 @@ class WooVariationSearch {
                         continue;
                     }
                 } else {
-                    if ( $product->is_type( 'variable' ) ) {
-                        $children = $product->get_children();
-                        $has_stock = false;
-                        foreach ( $children as $child_id ) {
-                            $child = wc_get_product( $child_id );
-                            if ( $this->is_variation_in_stock( $child ) ) {
-                                $has_stock = true;
-                                break;
-                            }
-                        }
-                        if ( ! $has_stock ) {
-                            continue;
-                        }
-                    } else {
-                        if ( $product->get_stock_status() !== 'instock' ) {
-                            continue;
-                        }
+                    if ( ! $product->is_in_stock() ) {
+                        continue;
                     }
                 }
                 
