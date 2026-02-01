@@ -137,14 +137,20 @@ class WooVariationSearch {
         
         if ( isset( $matched_variations[ $product_id ] ) ) {
             $variation_id = $matched_variations[ $product_id ];
-            $variation_image_id = get_post_meta( $variation_id, '_thumbnail_id', true );
-            if ( $variation_image_id && (int) $variation_image_id > 0 ) {
-                $image_id = (int) $variation_image_id;
+            
+            $variation = wc_get_product( $variation_id );
+            if ( $variation && $variation->get_image_id() ) {
+                $image_id = $variation->get_image_id();
+            } else {
+                $variation_image_id = get_post_meta( $variation_id, '_thumbnail_id', true );
+                if ( $variation_image_id && (int) $variation_image_id > 0 ) {
+                    $image_id = (int) $variation_image_id;
+                }
             }
         }
         
         if ( $image_id ) {
-            $product_image = wp_get_attachment_image_src( $image_id );
+            $product_image = wp_get_attachment_image_src( $image_id, 'woocommerce_thumbnail' );
             return $product_image ? $product_image[0] : '';
         }
         
