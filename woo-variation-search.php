@@ -539,7 +539,24 @@ class WooVariationSearch {
             
             $color_product_ids = ! empty( $matched_variations ) ? array_keys( $matched_variations ) : array();
             
-            $all_product_ids = array_unique( array_merge( $title_product_ids, $color_product_ids ) );
+            $flatsome_product_ids = array();
+            if ( function_exists( 'flatsome_ajax_search_get_products' ) ) {
+                $flatsome_products = flatsome_ajax_search_get_products( 'product', $args );
+                wp_reset_postdata();
+                foreach ( $flatsome_products as $fp ) {
+                    $flatsome_product_ids[] = $fp->ID;
+                }
+                
+                if ( get_theme_mod( 'search_by_sku', 0 ) ) {
+                    $sku_products = flatsome_ajax_search_get_products( 'sku', $args );
+                    wp_reset_postdata();
+                    foreach ( $sku_products as $sp ) {
+                        $flatsome_product_ids[] = $sp->ID;
+                    }
+                }
+            }
+            
+            $all_product_ids = array_unique( array_merge( $title_product_ids, $color_product_ids, $flatsome_product_ids ) );
             
             foreach ( $all_product_ids as $product_id ) {
                 if ( in_array( $product_id, $added_ids, true ) ) {
