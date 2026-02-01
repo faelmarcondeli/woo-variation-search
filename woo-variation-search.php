@@ -116,7 +116,14 @@ class WooVariationSearch {
         $merged_ids = array_unique( array_merge( $title_matches, $this->color_product_ids ) );
         
         if ( ! empty( $merged_ids ) ) {
-            $query->set( 'post__in', $merged_ids );
+            $in_stock_ids = $this->filter_in_stock_products( $merged_ids );
+            
+            if ( empty( $in_stock_ids ) ) {
+                $query->set( 'post__in', array( 0 ) );
+            } else {
+                $query->set( 'post__in', $in_stock_ids );
+            }
+            
             $query->set( 's', '' );
             $query->set( 'orderby', 'post__in' );
             
@@ -127,6 +134,28 @@ class WooVariationSearch {
                 return $s;
             } );
         }
+    }
+    
+    private function filter_in_stock_products( $product_ids ) {
+        if ( empty( $product_ids ) ) {
+            return array();
+        }
+        
+        global $wpdb;
+        
+        $placeholders = implode( ', ', array_fill( 0, count( $product_ids ), '%d' ) );
+        
+        $in_stock = $wpdb->get_col( $wpdb->prepare(
+            "SELECT DISTINCT p.ID 
+            FROM {$wpdb->posts} p
+            INNER JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id
+            WHERE p.ID IN ($placeholders)
+            AND pm.meta_key = '_stock_status'
+            AND pm.meta_value = 'instock'",
+            ...$product_ids
+        ) );
+        
+        return array_map( 'intval', $in_stock );
     }
     
     public function redirect_product_search() {
