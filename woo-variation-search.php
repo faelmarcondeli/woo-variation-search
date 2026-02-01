@@ -25,9 +25,11 @@ class WooVariationSearch {
         return self::$instance;
     }
     
+    private $color_product_ids = array();
+    
     private function __construct() {
         add_action( 'template_redirect', array( $this, 'redirect_product_search' ) );
-        add_action( 'pre_get_posts', array( $this, 'modify_shop_search_query' ), 99 );
+        add_action( 'woocommerce_product_query', array( $this, 'modify_wc_product_query' ), 999 );
         
         remove_action( 'wp_ajax_flatsome_ajax_search_products', 'flatsome_ajax_search' );
         remove_action( 'wp_ajax_nopriv_flatsome_ajax_search_products', 'flatsome_ajax_search' );
@@ -35,42 +37,19 @@ class WooVariationSearch {
         add_action( 'wp_ajax_nopriv_flatsome_ajax_search_products', array( $this, 'custom_ajax_search' ), 5 );
     }
     
-    public function modify_shop_search_query( $query ) {
-        if ( is_admin() ) {
-            return;
-        }
-        
-        if ( wp_doing_ajax() ) {
-            return;
-        }
-        
-        if ( ! $query->is_main_query() ) {
-            return;
-        }
-        
+    public function modify_wc_product_query( $query ) {
         $search = isset( $_GET['s'] ) ? sanitize_text_field( $_GET['s'] ) : '';
         
         if ( empty( $search ) ) {
             return;
         }
         
-        $post_type = $query->get( 'post_type' );
-        $is_product_query = ( $post_type === 'product' || ( is_array( $post_type ) && in_array( 'product', $post_type, true ) ) );
+        $matched_variations = $this->get_matched_variations( $search );
+        $this->color_product_ids = ! empty( $matched_variations ) ? array_keys( $matched_variations ) : array();
         
-        $shop_page_id = function_exists( 'wc_get_page_id' ) ? wc_get_page_id( 'shop' ) : 0;
-        $current_page_id = $query->get( 'page_id' );
-        $is_shop_page = ( $shop_page_id > 0 && $current_page_id == $shop_page_id );
-        
-        $request_uri = isset( $_SERVER['REQUEST_URI'] ) ? $_SERVER['REQUEST_URI'] : '';
-        $shop_in_uri = ( strpos( $request_uri, 'loja' ) !== false || strpos( $request_uri, 'shop' ) !== false );
-        
-        if ( ! $is_product_query && ! $is_shop_page && ! $shop_in_uri ) {
+        if ( empty( $this->color_product_ids ) ) {
             return;
         }
-        
-        $matched_variations = $this->get_matched_variations( $search );
-        
-        $color_product_ids = ! empty( $matched_variations ) ? array_keys( $matched_variations ) : array();
         
         global $wpdb;
         $search_escaped = '%' . $wpdb->esc_like( $search ) . '%';
@@ -83,15 +62,12 @@ class WooVariationSearch {
             $search_escaped
         ) );
         
-        $merged_ids = array_unique( array_merge( $title_matches, $color_product_ids ) );
+        $merged_ids = array_unique( array_merge( $title_matches, $this->color_product_ids ) );
         
         if ( ! empty( $merged_ids ) ) {
-            $query->set( 'post_type', 'product' );
             $query->set( 'post__in', $merged_ids );
             $query->set( 's', '' );
             $query->set( 'orderby', 'post__in' );
-        } else {
-            $query->set( 'post__in', array( 0 ) );
         }
     }
     
