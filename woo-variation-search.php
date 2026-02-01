@@ -58,7 +58,74 @@ class WooVariationSearch {
             add_filter( 'woocommerce_product_get_image', array( $this, 'filter_product_image_html' ), 999, 5 );
             add_filter( 'woocommerce_loop_product_link', array( $this, 'filter_product_link' ), 999, 2 );
             add_filter( 'post_type_link', array( $this, 'filter_product_permalink' ), 999, 2 );
+            add_action( 'wp_footer', array( $this, 'add_variation_link_script' ) );
         }
+    }
+    
+    public function add_variation_link_script() {
+        $variation_data = array();
+        
+        foreach ( $this->matched_variations_cache as $product_id => $variation_id ) {
+            $variation = wc_get_product( $variation_id );
+            
+            if ( ! $variation || ! $variation->is_type( 'variation' ) ) {
+                continue;
+            }
+            
+            $attributes = $variation->get_attributes();
+            
+            if ( empty( $attributes ) ) {
+                continue;
+            }
+            
+            $query_params = array();
+            foreach ( $attributes as $attr_name => $attr_value ) {
+                if ( ! empty( $attr_value ) ) {
+                    $query_params[ 'attribute_' . $attr_name ] = $attr_value;
+                }
+            }
+            
+            if ( ! empty( $query_params ) ) {
+                $variation_data[ $product_id ] = $query_params;
+            }
+        }
+        
+        if ( empty( $variation_data ) ) {
+            return;
+        }
+        ?>
+        <script type="text/javascript">
+        (function() {
+            var variationData = <?php echo json_encode( $variation_data ); ?>;
+            
+            document.querySelectorAll('.products .product').forEach(function(productEl) {
+                var link = productEl.querySelector('a.woocommerce-LoopProduct-link, a.plain');
+                if (!link) return;
+                
+                var href = link.getAttribute('href');
+                if (!href) return;
+                
+                for (var productId in variationData) {
+                    if (href.indexOf('p=' + productId) !== -1 || productEl.classList.contains('post-' + productId)) {
+                        var params = variationData[productId];
+                        var queryString = Object.keys(params).map(function(key) {
+                            return encodeURIComponent(key) + '=' + encodeURIComponent(params[key]);
+                        }).join('&');
+                        
+                        var newHref = href + (href.indexOf('?') === -1 ? '?' : '&') + queryString;
+                        
+                        productEl.querySelectorAll('a').forEach(function(a) {
+                            if (a.getAttribute('href') === href) {
+                                a.setAttribute('href', newHref);
+                            }
+                        });
+                        break;
+                    }
+                }
+            });
+        })();
+        </script>
+        <?php
     }
     
     public function filter_product_permalink( $permalink, $post ) {
