@@ -533,7 +533,7 @@ class WooVariationSearch {
                 WHERE post_type = 'product' 
                 AND post_status = 'publish' 
                 AND post_title LIKE %s
-                LIMIT 50",
+                LIMIT 100",
                 $search_escaped
             ) );
             
@@ -595,7 +595,7 @@ class WooVariationSearch {
                     'price' => $product->get_price_html(),
                 );
                 
-                if ( count( $suggestions ) >= 10 ) {
+                if ( count( $suggestions ) >= 20 ) {
                     break;
                 }
             }
