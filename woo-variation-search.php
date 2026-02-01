@@ -276,6 +276,18 @@ class WooVariationSearch {
         $query->set( 's', '' );
         $query->set( 'orderby', 'post__in' );
         
+        $tax_query = $query->get( 'tax_query' );
+        if ( ! is_array( $tax_query ) ) {
+            $tax_query = array();
+        }
+        $tax_query[] = array(
+            'taxonomy' => 'product_visibility',
+            'field'    => 'name',
+            'terms'    => 'outofstock',
+            'operator' => 'NOT IN',
+        );
+        $query->set( 'tax_query', $tax_query );
+        
         add_filter( 'get_search_query', function( $s ) use ( $search ) {
             if ( empty( $s ) && ! empty( $search ) ) {
                 return $search;
@@ -303,17 +315,22 @@ class WooVariationSearch {
                     $variation_id = $this->matched_variations_cache[ $product_id ];
                     $variation = wc_get_product( $variation_id );
                     
-                    if ( $variation && $variation->is_in_stock() ) {
+                    if ( $this->is_variation_in_stock( $variation ) ) {
                         $in_stock[] = $product_id;
                     }
                 } else {
-                    $available_variations = $product->get_available_variations();
-                    if ( ! empty( $available_variations ) ) {
-                        $in_stock[] = $product_id;
+                    $children = $product->get_children();
+                    foreach ( $children as $child_id ) {
+                        $child = wc_get_product( $child_id );
+                        if ( $this->is_variation_in_stock( $child ) ) {
+                            $in_stock[] = $product_id;
+                            break;
+                        }
                     }
                 }
             } else {
-                if ( $product->is_in_stock() ) {
+                $stock_status = $product->get_stock_status();
+                if ( $stock_status === 'instock' ) {
                     $in_stock[] = $product_id;
                 }
             }
@@ -374,13 +391,34 @@ class WooVariationSearch {
                 }
                 
                 $variation = wc_get_product( (int) $row->variation_id );
-                if ( $variation && $variation->is_in_stock() ) {
+                if ( $variation && $this->is_variation_in_stock( $variation ) ) {
                     $matched[ $row->parent_id ] = (int) $row->variation_id;
                 }
             }
         }
         
         return $matched;
+    }
+    
+    private function is_variation_in_stock( $variation ) {
+        if ( ! $variation ) {
+            return false;
+        }
+        
+        $stock_status = $variation->get_stock_status();
+        
+        if ( $stock_status !== 'instock' ) {
+            return false;
+        }
+        
+        if ( $variation->managing_stock() ) {
+            $stock_quantity = $variation->get_stock_quantity();
+            if ( $stock_quantity !== null && $stock_quantity <= 0 ) {
+                return false;
+            }
+        }
+        
+        return true;
     }
     
     private function get_variation_image_url( $product_id, $matched_variations ) {
