@@ -368,6 +368,10 @@ class WooVariationSearch {
         
         $matched = array();
         
+        $debug_log = array();
+        $debug_log['search_original'] = $search_original;
+        $debug_log['search_sanitized'] = $search_sanitized;
+        
         $lookup_table = $wpdb->prefix . 'wc_product_attributes_lookup';
         $terms_table = $wpdb->prefix . 'terms';
         
@@ -415,16 +419,27 @@ class WooVariationSearch {
             WHERE tt.taxonomy = 'pa_cores-de-tecidos'"
         );
         
+        $debug_log['all_terms_count'] = count( $all_color_terms );
+        $debug_log['matched_terms'] = array();
+        
         if ( $all_color_terms ) {
             foreach ( $all_color_terms as $term ) {
                 $term_name_lower = mb_strtolower( $term->name );
                 $term_slug_lower = mb_strtolower( $term->slug );
                 
-                if ( strpos( $term_name_lower, $search_original ) === false && 
-                     strpos( $term_slug_lower, $search_original ) === false &&
-                     strpos( $term_slug_lower, $search_sanitized ) === false ) {
+                $name_match = strpos( $term_name_lower, $search_original );
+                $slug_match = strpos( $term_slug_lower, $search_original );
+                $slug_sanitized_match = strpos( $term_slug_lower, $search_sanitized );
+                
+                if ( $name_match === false && $slug_match === false && $slug_sanitized_match === false ) {
                     continue;
                 }
+                
+                $debug_log['matched_terms'][] = array(
+                    'name' => $term->name,
+                    'slug' => $term->slug,
+                    'name_match_pos' => $name_match,
+                );
                 
                 $variations = $wpdb->get_results( $wpdb->prepare(
                     "SELECT p.ID as variation_id, p.post_parent as parent_id
@@ -451,6 +466,13 @@ class WooVariationSearch {
                     }
                 }
             }
+        }
+        
+        $debug_log['matched_products_count'] = count( $matched );
+        $debug_log['matched_products'] = $matched;
+        
+        if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
+            error_log( 'WooVariationSearch Debug: ' . print_r( $debug_log, true ) );
         }
         
         return $matched;
