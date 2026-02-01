@@ -247,10 +247,6 @@ class WooVariationSearch {
         $matched_variations = $this->get_matched_variations( $search );
         $this->color_product_ids = ! empty( $matched_variations ) ? array_keys( $matched_variations ) : array();
         
-        if ( empty( $this->color_product_ids ) ) {
-            return;
-        }
-        
         global $wpdb;
         $search_escaped = '%' . $wpdb->esc_like( $search ) . '%';
         
@@ -264,25 +260,27 @@ class WooVariationSearch {
         
         $merged_ids = array_unique( array_merge( $title_matches, $this->color_product_ids ) );
         
-        if ( ! empty( $merged_ids ) ) {
-            $in_stock_ids = $this->filter_in_stock_products( $merged_ids );
-            
-            if ( empty( $in_stock_ids ) ) {
-                $query->set( 'post__in', array( 0 ) );
-            } else {
-                $query->set( 'post__in', $in_stock_ids );
-            }
-            
-            $query->set( 's', '' );
-            $query->set( 'orderby', 'post__in' );
-            
-            add_filter( 'get_search_query', function( $s ) use ( $search ) {
-                if ( empty( $s ) && ! empty( $search ) ) {
-                    return $search;
-                }
-                return $s;
-            } );
+        if ( empty( $merged_ids ) ) {
+            return;
         }
+        
+        $in_stock_ids = $this->filter_in_stock_products( $merged_ids );
+        
+        if ( empty( $in_stock_ids ) ) {
+            $query->set( 'post__in', array( 0 ) );
+        } else {
+            $query->set( 'post__in', $in_stock_ids );
+        }
+        
+        $query->set( 's', '' );
+        $query->set( 'orderby', 'post__in' );
+        
+        add_filter( 'get_search_query', function( $s ) use ( $search ) {
+            if ( empty( $s ) && ! empty( $search ) ) {
+                return $search;
+            }
+            return $s;
+        } );
     }
     
     private function filter_in_stock_products( $product_ids ) {
