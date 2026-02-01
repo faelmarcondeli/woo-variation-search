@@ -283,6 +283,41 @@ class WooVariationSearch {
         return '';
     }
     
+    private function get_variation_url( $product, $matched_variations ) {
+        $permalink = $product->get_permalink();
+        $product_id = $product->get_id();
+        
+        if ( ! isset( $matched_variations[ $product_id ] ) ) {
+            return $permalink;
+        }
+        
+        $variation_id = $matched_variations[ $product_id ];
+        $variation = wc_get_product( $variation_id );
+        
+        if ( ! $variation || ! $variation->is_type( 'variation' ) ) {
+            return $permalink;
+        }
+        
+        $attributes = $variation->get_variation_attributes();
+        
+        if ( empty( $attributes ) ) {
+            return $permalink;
+        }
+        
+        $query_args = array();
+        foreach ( $attributes as $attribute => $value ) {
+            if ( ! empty( $value ) ) {
+                $query_args[ $attribute ] = $value;
+            }
+        }
+        
+        if ( ! empty( $query_args ) ) {
+            $permalink = add_query_arg( $query_args, $permalink );
+        }
+        
+        return $permalink;
+    }
+    
     public function custom_ajax_search() {
         global $post;
         $original_post = $post;
@@ -386,12 +421,13 @@ class WooVariationSearch {
                 $added_ids[] = $product_id;
                 
                 $img_url = $this->get_variation_image_url( $product_id, $matched_variations );
+                $product_url = $this->get_variation_url( $product, $matched_variations );
 
                 $suggestions[] = array(
                     'type'  => 'Product',
                     'id'    => $product_id,
                     'value' => $product->get_title(),
-                    'url'   => $product->get_permalink(),
+                    'url'   => $product_url,
                     'img'   => $img_url,
                     'price' => $product->get_price_html(),
                 );
