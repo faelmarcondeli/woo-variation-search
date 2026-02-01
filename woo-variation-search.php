@@ -57,7 +57,14 @@ class WooVariationSearch {
         $post_type = $query->get( 'post_type' );
         $is_product_query = ( $post_type === 'product' || ( is_array( $post_type ) && in_array( 'product', $post_type, true ) ) );
         
-        if ( ! $is_product_query && ! is_shop() ) {
+        $shop_page_id = function_exists( 'wc_get_page_id' ) ? wc_get_page_id( 'shop' ) : 0;
+        $current_page_id = $query->get( 'page_id' );
+        $is_shop_page = ( $shop_page_id > 0 && $current_page_id == $shop_page_id );
+        
+        $request_uri = isset( $_SERVER['REQUEST_URI'] ) ? $_SERVER['REQUEST_URI'] : '';
+        $shop_in_uri = ( strpos( $request_uri, 'loja' ) !== false || strpos( $request_uri, 'shop' ) !== false );
+        
+        if ( ! $is_product_query && ! $is_shop_page && ! $shop_in_uri ) {
             return;
         }
         
