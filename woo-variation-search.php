@@ -574,7 +574,6 @@ class WooVariationSearch {
 
         $matched_variations = $this->get_matched_variations( $query );
         $added_ids = array();
-        $query_lower = mb_strtolower( $query );
 
         if ( $wc_activated ) {
             global $wpdb;
@@ -584,33 +583,17 @@ class WooVariationSearch {
                 "SELECT ID FROM {$wpdb->posts} 
                 WHERE post_type = 'product' 
                 AND post_status = 'publish' 
-                AND post_title LIKE %s
-                LIMIT 100",
+                AND post_title LIKE %s",
                 $search_escaped
             ) );
             
             $color_product_ids = ! empty( $matched_variations ) ? array_keys( $matched_variations ) : array();
             
-            $flatsome_product_ids = array();
-            if ( function_exists( 'flatsome_ajax_search_get_products' ) ) {
-                $flatsome_products = flatsome_ajax_search_get_products( 'product', $args );
-                wp_reset_postdata();
-                foreach ( $flatsome_products as $fp ) {
-                    $flatsome_product_ids[] = $fp->ID;
-                }
-                
-                if ( get_theme_mod( 'search_by_sku', 0 ) ) {
-                    $sku_products = flatsome_ajax_search_get_products( 'sku', $args );
-                    wp_reset_postdata();
-                    foreach ( $sku_products as $sp ) {
-                        $flatsome_product_ids[] = $sp->ID;
-                    }
-                }
-            }
+            $merged_ids = array_unique( array_merge( $title_product_ids, $color_product_ids ) );
             
-            $all_product_ids = array_unique( array_merge( $title_product_ids, $color_product_ids, $flatsome_product_ids ) );
+            $in_stock_ids = $this->filter_in_stock_products( $merged_ids );
             
-            foreach ( $all_product_ids as $product_id ) {
+            foreach ( $in_stock_ids as $product_id ) {
                 if ( in_array( $product_id, $added_ids, true ) ) {
                     continue;
                 }
@@ -619,20 +602,6 @@ class WooVariationSearch {
                 
                 if ( ! $product || $product->get_status() !== 'publish' ) {
                     continue;
-                }
-                
-                $is_color_match = isset( $matched_variations[ $product_id ] );
-                
-                if ( $is_color_match ) {
-                    $variation_id = $matched_variations[ $product_id ];
-                    $variation = wc_get_product( $variation_id );
-                    if ( ! $variation || ! $this->is_variation_in_stock( $variation ) ) {
-                        continue;
-                    }
-                } else {
-                    if ( ! $product->is_in_stock() ) {
-                        continue;
-                    }
                 }
                 
                 $added_ids[] = $product_id;
@@ -666,7 +635,7 @@ class WooVariationSearch {
                     }
                     
                     $title_lower = mb_strtolower( get_the_title( $result_post->ID ) );
-                    if ( strpos( $title_lower, $query_lower ) === false ) {
+                    if ( strpos( $title_lower, mb_strtolower( $query ) ) === false ) {
                         continue;
                     }
                     
