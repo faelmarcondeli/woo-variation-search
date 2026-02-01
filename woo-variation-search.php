@@ -577,6 +577,7 @@ class WooVariationSearch {
         );
 
         $matched_variations = $this->get_matched_variations( $query );
+        $this->matched_variations_cache = $matched_variations;
         $added_ids = array();
 
         if ( $wc_activated ) {
