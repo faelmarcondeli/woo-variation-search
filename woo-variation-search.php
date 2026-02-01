@@ -26,15 +26,88 @@ class WooVariationSearch {
     }
     
     private $color_product_ids = array();
+    private $matched_variations_cache = array();
+    private $is_search_results = false;
     
     private function __construct() {
         add_action( 'template_redirect', array( $this, 'redirect_product_search' ) );
+        add_action( 'template_redirect', array( $this, 'setup_search_image_filter' ), 5 );
         add_action( 'woocommerce_product_query', array( $this, 'modify_wc_product_query' ), 999 );
         
         remove_action( 'wp_ajax_flatsome_ajax_search_products', 'flatsome_ajax_search' );
         remove_action( 'wp_ajax_nopriv_flatsome_ajax_search_products', 'flatsome_ajax_search' );
         add_action( 'wp_ajax_flatsome_ajax_search_products', array( $this, 'custom_ajax_search' ), 5 );
         add_action( 'wp_ajax_nopriv_flatsome_ajax_search_products', array( $this, 'custom_ajax_search' ), 5 );
+    }
+    
+    public function setup_search_image_filter() {
+        $search = isset( $_GET['s'] ) ? sanitize_text_field( $_GET['s'] ) : '';
+        
+        if ( empty( $search ) ) {
+            return;
+        }
+        
+        $request_uri = isset( $_SERVER['REQUEST_URI'] ) ? $_SERVER['REQUEST_URI'] : '';
+        $is_shop = ( strpos( $request_uri, 'loja' ) !== false || strpos( $request_uri, 'shop' ) !== false );
+        
+        if ( ! $is_shop ) {
+            return;
+        }
+        
+        $this->matched_variations_cache = $this->get_matched_variations( $search );
+        
+        if ( ! empty( $this->matched_variations_cache ) ) {
+            $this->is_search_results = true;
+            add_filter( 'woocommerce_product_get_image_id', array( $this, 'filter_product_image_id' ), 999, 2 );
+            add_filter( 'post_thumbnail_id', array( $this, 'filter_post_thumbnail_id' ), 999, 2 );
+        }
+    }
+    
+    public function filter_product_image_id( $image_id, $product ) {
+        if ( ! $this->is_search_results ) {
+            return $image_id;
+        }
+        
+        $product_id = $product->get_id();
+        
+        if ( isset( $this->matched_variations_cache[ $product_id ] ) ) {
+            $variation_id = $this->matched_variations_cache[ $product_id ];
+            $variation = wc_get_product( $variation_id );
+            
+            if ( $variation ) {
+                $variation_image_id = $variation->get_image_id();
+                if ( $variation_image_id ) {
+                    return $variation_image_id;
+                }
+            }
+        }
+        
+        return $image_id;
+    }
+    
+    public function filter_post_thumbnail_id( $thumbnail_id, $post_id ) {
+        if ( ! $this->is_search_results ) {
+            return $thumbnail_id;
+        }
+        
+        $post_type = get_post_type( $post_id );
+        if ( $post_type !== 'product' ) {
+            return $thumbnail_id;
+        }
+        
+        if ( isset( $this->matched_variations_cache[ $post_id ] ) ) {
+            $variation_id = $this->matched_variations_cache[ $post_id ];
+            $variation = wc_get_product( $variation_id );
+            
+            if ( $variation ) {
+                $variation_image_id = $variation->get_image_id();
+                if ( $variation_image_id ) {
+                    return $variation_image_id;
+                }
+            }
+        }
+        
+        return $thumbnail_id;
     }
     
     public function modify_wc_product_query( $query ) {
