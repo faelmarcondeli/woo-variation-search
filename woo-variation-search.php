@@ -261,7 +261,9 @@ class WooVariationSearch {
             $search_escaped
         ) );
         
-        $merged_ids = array_unique( array_merge( $title_matches, $this->color_product_ids ) );
+        $tag_matches = $this->get_products_by_tag( $search );
+        
+        $merged_ids = array_unique( array_merge( $title_matches, $this->color_product_ids, $tag_matches ) );
         
         if ( empty( $merged_ids ) ) {
             return;
@@ -458,6 +460,37 @@ class WooVariationSearch {
         return $matched;
     }
     
+    private function get_products_by_tag( $search ) {
+        global $wpdb;
+        
+        if ( empty( $search ) ) {
+            return array();
+        }
+        
+        $search_lower = mb_strtolower( $search );
+        $search_escaped = '%' . $wpdb->esc_like( $search_lower ) . '%';
+        
+        $term_taxonomy_table = $wpdb->prefix . 'term_taxonomy';
+        $term_relationships_table = $wpdb->prefix . 'term_relationships';
+        $terms_table = $wpdb->prefix . 'terms';
+        
+        $product_ids = $wpdb->get_col( $wpdb->prepare(
+            "SELECT DISTINCT p.ID
+            FROM {$wpdb->posts} p
+            INNER JOIN {$term_relationships_table} tr ON p.ID = tr.object_id
+            INNER JOIN {$term_taxonomy_table} tt ON tr.term_taxonomy_id = tt.term_taxonomy_id
+            INNER JOIN {$terms_table} t ON tt.term_id = t.term_id
+            WHERE p.post_type = 'product'
+            AND p.post_status = 'publish'
+            AND tt.taxonomy = 'product_tag'
+            AND (LOWER(t.name) LIKE %s OR LOWER(t.slug) LIKE %s)",
+            $search_escaped,
+            $search_escaped
+        ) );
+        
+        return $product_ids ? $product_ids : array();
+    }
+    
     private function is_variation_in_stock( $variation ) {
         if ( ! $variation ) {
             return false;
@@ -596,7 +629,9 @@ class WooVariationSearch {
             
             $color_product_ids = ! empty( $matched_variations ) ? array_keys( $matched_variations ) : array();
             
-            $merged_ids = array_unique( array_merge( $title_product_ids, $color_product_ids ) );
+            $tag_product_ids = $this->get_products_by_tag( $query );
+            
+            $merged_ids = array_unique( array_merge( $title_product_ids, $color_product_ids, $tag_product_ids ) );
             
             $in_stock_ids = $this->filter_in_stock_products( $merged_ids );
             
