@@ -359,7 +359,7 @@ class WooVariationSearch {
     private function get_matched_variations( $search ) {
         global $wpdb;
         
-        $search_original = trim( $search );
+        $search_original = mb_strtolower( trim( $search ) );
         $search_sanitized = sanitize_title( remove_accents( $search ) );
         
         if ( empty( $search_original ) ) {
@@ -376,8 +376,8 @@ class WooVariationSearch {
             WHERE pal.taxonomy = 'pa_cores-de-tecidos'
             AND pal.is_variation_attribute = 1
             AND (
-                t.name LIKE %s
-                OR t.name LIKE %s
+                LOWER(t.name) LIKE %s
+                OR LOWER(t.name) LIKE %s
                 OR t.slug LIKE %s
                 OR t.slug LIKE %s
             )",
