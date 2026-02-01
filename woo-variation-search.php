@@ -288,21 +288,37 @@ class WooVariationSearch {
             return array();
         }
         
-        global $wpdb;
+        $in_stock = array();
         
-        $placeholders = implode( ', ', array_fill( 0, count( $product_ids ), '%d' ) );
+        foreach ( $product_ids as $product_id ) {
+            $product = wc_get_product( $product_id );
+            
+            if ( ! $product ) {
+                continue;
+            }
+            
+            if ( $product->is_type( 'variable' ) ) {
+                if ( isset( $this->matched_variations_cache[ $product_id ] ) ) {
+                    $variation_id = $this->matched_variations_cache[ $product_id ];
+                    $variation = wc_get_product( $variation_id );
+                    
+                    if ( $variation && $variation->is_in_stock() ) {
+                        $in_stock[] = $product_id;
+                    }
+                } else {
+                    $available_variations = $product->get_available_variations();
+                    if ( ! empty( $available_variations ) ) {
+                        $in_stock[] = $product_id;
+                    }
+                }
+            } else {
+                if ( $product->is_in_stock() ) {
+                    $in_stock[] = $product_id;
+                }
+            }
+        }
         
-        $in_stock = $wpdb->get_col( $wpdb->prepare(
-            "SELECT DISTINCT p.ID 
-            FROM {$wpdb->posts} p
-            INNER JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id
-            WHERE p.ID IN ($placeholders)
-            AND pm.meta_key = '_stock_status'
-            AND pm.meta_value = 'instock'",
-            ...$product_ids
-        ) );
-        
-        return array_map( 'intval', $in_stock );
+        return $in_stock;
     }
     
     public function redirect_product_search() {
