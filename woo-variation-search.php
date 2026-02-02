@@ -305,42 +305,64 @@ class WooVariationSearch {
             return array();
         }
         
-        $in_stock = array();
+        global $wpdb;
         
-        foreach ( $product_ids as $product_id ) {
-            $product = wc_get_product( $product_id );
-            
-            if ( ! $product ) {
-                continue;
-            }
-            
-            if ( $product->is_type( 'variable' ) ) {
-                if ( isset( $this->matched_variations_cache[ $product_id ] ) ) {
-                    $variation_id = $this->matched_variations_cache[ $product_id ];
-                    $variation = wc_get_product( $variation_id );
-                    
-                    if ( $this->is_variation_in_stock( $variation ) ) {
-                        $in_stock[] = $product_id;
-                    }
-                } else {
-                    $children = $product->get_children();
-                    foreach ( $children as $child_id ) {
-                        $child = wc_get_product( $child_id );
-                        if ( $this->is_variation_in_stock( $child ) ) {
-                            $in_stock[] = $product_id;
-                            break;
-                        }
-                    }
+        $ids_placeholder = implode( ',', array_map( 'intval', $product_ids ) );
+        
+        $simple_in_stock = $wpdb->get_col(
+            "SELECT p.ID
+            FROM {$wpdb->posts} p
+            INNER JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id AND pm.meta_key = '_stock_status'
+            WHERE p.ID IN ({$ids_placeholder})
+            AND p.post_type = 'product'
+            AND pm.meta_value = 'instock'"
+        );
+        
+        $variable_products = $wpdb->get_col(
+            "SELECT p.ID
+            FROM {$wpdb->posts} p
+            INNER JOIN {$wpdb->term_relationships} tr ON p.ID = tr.object_id
+            INNER JOIN {$wpdb->term_taxonomy} tt ON tr.term_taxonomy_id = tt.term_taxonomy_id
+            INNER JOIN {$wpdb->terms} t ON tt.term_id = t.term_id
+            WHERE p.ID IN ({$ids_placeholder})
+            AND p.post_type = 'product'
+            AND tt.taxonomy = 'product_type'
+            AND t.slug = 'variable'"
+        );
+        
+        $in_stock = $simple_in_stock;
+        
+        foreach ( $variable_products as $product_id ) {
+            if ( isset( $this->matched_variations_cache[ $product_id ] ) ) {
+                $variation_id = $this->matched_variations_cache[ $product_id ];
+                $stock_status = $wpdb->get_var( $wpdb->prepare(
+                    "SELECT meta_value FROM {$wpdb->postmeta} 
+                    WHERE post_id = %d AND meta_key = '_stock_status'",
+                    $variation_id
+                ) );
+                
+                if ( $stock_status === 'instock' ) {
+                    $in_stock[] = $product_id;
                 }
             } else {
-                $stock_status = $product->get_stock_status();
-                if ( $stock_status === 'instock' ) {
+                $has_in_stock = $wpdb->get_var( $wpdb->prepare(
+                    "SELECT 1 FROM {$wpdb->posts} p
+                    INNER JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id AND pm.meta_key = '_stock_status'
+                    WHERE p.post_parent = %d
+                    AND p.post_type = 'product_variation'
+                    AND p.post_status = 'publish'
+                    AND pm.meta_value = 'instock'
+                    LIMIT 1",
+                    $product_id
+                ) );
+                
+                if ( $has_in_stock ) {
                     $in_stock[] = $product_id;
                 }
             }
         }
         
-        return $in_stock;
+        return array_unique( $in_stock );
     }
     
     public function redirect_product_search() {
@@ -371,7 +393,6 @@ class WooVariationSearch {
         }
         
         $matched = array();
-        
         $lookup_table = $wpdb->prefix . 'wc_product_attributes_lookup';
         $terms_table = $wpdb->prefix . 'terms';
         
@@ -379,17 +400,20 @@ class WooVariationSearch {
         
         if ( $table_exists ) {
             $color_products = $wpdb->get_results( $wpdb->prepare(
-                "SELECT DISTINCT pal.product_or_parent_id as parent_id, pal.product_id as variation_id
+                "SELECT pal.product_or_parent_id as parent_id, pal.product_id as variation_id
                 FROM {$lookup_table} pal
                 INNER JOIN {$terms_table} t ON pal.term_id = t.term_id
+                INNER JOIN {$wpdb->postmeta} pm ON pal.product_id = pm.post_id AND pm.meta_key = '_stock_status'
                 WHERE pal.taxonomy = 'pa_cores-de-tecidos'
                 AND pal.is_variation_attribute = 1
+                AND pm.meta_value = 'instock'
                 AND (
                     LOWER(t.name) LIKE %s
                     OR LOWER(t.name) LIKE %s
                     OR t.slug LIKE %s
                     OR t.slug LIKE %s
-                )",
+                )
+                ORDER BY pal.product_or_parent_id, pal.product_id",
                 '%' . $wpdb->esc_like( $search_original ) . '%',
                 '%' . $wpdb->esc_like( $search_sanitized ) . '%',
                 '%' . $wpdb->esc_like( $search_original ) . '%',
@@ -398,61 +422,44 @@ class WooVariationSearch {
             
             if ( $color_products ) {
                 foreach ( $color_products as $row ) {
-                    if ( isset( $matched[ $row->parent_id ] ) ) {
-                        continue;
-                    }
-                    
-                    $variation = wc_get_product( (int) $row->variation_id );
-                    if ( $variation && $this->is_variation_in_stock( $variation ) ) {
+                    if ( ! isset( $matched[ $row->parent_id ] ) ) {
                         $matched[ $row->parent_id ] = (int) $row->variation_id;
                     }
                 }
             }
+            
+            return $matched;
         }
         
         $term_taxonomy_table = $wpdb->prefix . 'term_taxonomy';
         
-        $all_color_terms = $wpdb->get_results(
-            "SELECT t.term_id, t.name, t.slug 
-            FROM {$terms_table} t
-            INNER JOIN {$term_taxonomy_table} tt ON t.term_id = tt.term_id
-            WHERE tt.taxonomy = 'pa_cores-de-tecidos'"
-        );
+        $variations = $wpdb->get_results( $wpdb->prepare(
+            "SELECT p.ID as variation_id, p.post_parent as parent_id
+            FROM {$wpdb->posts} p
+            INNER JOIN {$wpdb->postmeta} pm_attr ON p.ID = pm_attr.post_id AND pm_attr.meta_key = 'attribute_pa_cores-de-tecidos'
+            INNER JOIN {$wpdb->postmeta} pm_stock ON p.ID = pm_stock.post_id AND pm_stock.meta_key = '_stock_status'
+            INNER JOIN {$terms_table} t ON pm_attr.meta_value = t.slug OR pm_attr.meta_value = t.name
+            INNER JOIN {$term_taxonomy_table} tt ON t.term_id = tt.term_id AND tt.taxonomy = 'pa_cores-de-tecidos'
+            WHERE p.post_type = 'product_variation'
+            AND p.post_status = 'publish'
+            AND pm_stock.meta_value = 'instock'
+            AND (
+                LOWER(t.name) LIKE %s
+                OR LOWER(t.name) LIKE %s
+                OR t.slug LIKE %s
+                OR t.slug LIKE %s
+            )
+            ORDER BY p.post_parent, p.ID",
+            '%' . $wpdb->esc_like( $search_original ) . '%',
+            '%' . $wpdb->esc_like( $search_sanitized ) . '%',
+            '%' . $wpdb->esc_like( $search_original ) . '%',
+            '%' . $wpdb->esc_like( $search_sanitized ) . '%'
+        ) );
         
-        if ( $all_color_terms ) {
-            foreach ( $all_color_terms as $term ) {
-                $term_name_lower = mb_strtolower( $term->name );
-                $term_slug_lower = mb_strtolower( $term->slug );
-                
-                if ( strpos( $term_name_lower, $search_original ) === false && 
-                     strpos( $term_slug_lower, $search_original ) === false &&
-                     strpos( $term_slug_lower, $search_sanitized ) === false ) {
-                    continue;
-                }
-                
-                $variations = $wpdb->get_results( $wpdb->prepare(
-                    "SELECT p.ID as variation_id, p.post_parent as parent_id
-                    FROM {$wpdb->posts} p
-                    INNER JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id
-                    WHERE p.post_type = 'product_variation'
-                    AND p.post_status = 'publish'
-                    AND pm.meta_key = 'attribute_pa_cores-de-tecidos'
-                    AND (pm.meta_value = %s OR pm.meta_value = %s)",
-                    $term->slug,
-                    $term->name
-                ) );
-                
-                if ( $variations ) {
-                    foreach ( $variations as $row ) {
-                        if ( isset( $matched[ $row->parent_id ] ) ) {
-                            continue;
-                        }
-                        
-                        $variation = wc_get_product( (int) $row->variation_id );
-                        if ( $variation && $this->is_variation_in_stock( $variation ) ) {
-                            $matched[ $row->parent_id ] = (int) $row->variation_id;
-                        }
-                    }
+        if ( $variations ) {
+            foreach ( $variations as $row ) {
+                if ( ! isset( $matched[ $row->parent_id ] ) ) {
+                    $matched[ $row->parent_id ] = (int) $row->variation_id;
                 }
             }
         }
@@ -489,27 +496,6 @@ class WooVariationSearch {
         ) );
         
         return $product_ids ? $product_ids : array();
-    }
-    
-    private function is_variation_in_stock( $variation ) {
-        if ( ! $variation ) {
-            return false;
-        }
-        
-        $stock_status = $variation->get_stock_status();
-        
-        if ( $stock_status !== 'instock' ) {
-            return false;
-        }
-        
-        if ( $variation->managing_stock() ) {
-            $stock_quantity = $variation->get_stock_quantity();
-            if ( $stock_quantity !== null && $stock_quantity <= 0 ) {
-                return false;
-            }
-        }
-        
-        return true;
     }
     
     private function get_variation_image_url( $product_id, $matched_variations ) {
