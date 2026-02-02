@@ -315,7 +315,7 @@ class WooVariationSearch {
             INNER JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id AND pm.meta_key = '_stock_status'
             WHERE p.ID IN ({$ids_placeholder})
             AND p.post_type = 'product'
-            AND pm.meta_value = 'instock'"
+            AND pm.meta_value IN ('instock', 'onbackorder')"
         );
         
         $variable_products = $wpdb->get_col(
@@ -341,7 +341,7 @@ class WooVariationSearch {
                     $variation_id
                 ) );
                 
-                if ( $stock_status === 'instock' ) {
+                if ( $stock_status === 'instock' || $stock_status === 'onbackorder' ) {
                     $in_stock[] = $product_id;
                 }
             } else {
@@ -351,7 +351,7 @@ class WooVariationSearch {
                     WHERE p.post_parent = %d
                     AND p.post_type = 'product_variation'
                     AND p.post_status = 'publish'
-                    AND pm.meta_value = 'instock'
+                    AND pm.meta_value IN ('instock', 'onbackorder')
                     LIMIT 1",
                     $product_id
                 ) );
@@ -406,7 +406,7 @@ class WooVariationSearch {
                 INNER JOIN {$wpdb->postmeta} pm ON pal.product_id = pm.post_id AND pm.meta_key = '_stock_status'
                 WHERE pal.taxonomy = 'pa_cores-de-tecidos'
                 AND pal.is_variation_attribute = 1
-                AND pm.meta_value = 'instock'
+                AND pm.meta_value IN ('instock', 'onbackorder')
                 AND (
                     LOWER(t.name) LIKE %s
                     OR LOWER(t.name) LIKE %s
@@ -442,7 +442,7 @@ class WooVariationSearch {
             INNER JOIN {$term_taxonomy_table} tt ON t.term_id = tt.term_id AND tt.taxonomy = 'pa_cores-de-tecidos'
             WHERE p.post_type = 'product_variation'
             AND p.post_status = 'publish'
-            AND pm_stock.meta_value = 'instock'
+            AND pm_stock.meta_value IN ('instock', 'onbackorder')
             AND (
                 LOWER(t.name) LIKE %s
                 OR LOWER(t.name) LIKE %s
