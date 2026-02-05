@@ -142,6 +142,7 @@ class WooVariationSearch {
     /**
      * Get variations by tonalidade filter value (used by filter widget)
      * Works like search - uses LIKE to find variations with matching color names
+     * Prioritizes variations that have images set
      */
     private function get_variations_by_tonalidade_slug( $filter_value ) {
         global $wpdb;
@@ -153,6 +154,7 @@ class WooVariationSearch {
         $terms = array_map( 'trim', explode( ',', $filter_value ) );
         
         $matched = array();
+        $matched_without_image = array();
         $lookup_table = $wpdb->prefix . 'wc_product_attributes_lookup';
         $terms_table = $wpdb->prefix . 'terms';
         
@@ -173,10 +175,12 @@ class WooVariationSearch {
             
             if ( $table_exists ) {
                 $tonalidade_products = $wpdb->get_results( $wpdb->prepare(
-                    "SELECT pal.product_or_parent_id as parent_id, pal.product_id as variation_id
+                    "SELECT pal.product_or_parent_id as parent_id, pal.product_id as variation_id,
+                            COALESCE(pm_img.meta_value, 0) as has_image
                     FROM {$lookup_table} pal
                     INNER JOIN {$terms_table} t ON pal.term_id = t.term_id
                     INNER JOIN {$wpdb->postmeta} pm ON pal.product_id = pm.post_id AND pm.meta_key = '_stock_status'
+                    LEFT JOIN {$wpdb->postmeta} pm_img ON pal.product_id = pm_img.post_id AND pm_img.meta_key = '_thumbnail_id'
                     WHERE pal.taxonomy = 'pa_cores-de-tecidos'
                     AND pal.is_variation_attribute = 1
                     AND pm.meta_value IN ('instock', 'onbackorder')
@@ -186,7 +190,7 @@ class WooVariationSearch {
                         OR t.slug LIKE %s
                         OR t.slug LIKE %s
                     )
-                    ORDER BY pal.product_or_parent_id, pal.product_id",
+                    ORDER BY pal.product_or_parent_id, (CASE WHEN pm_img.meta_value > 0 THEN 0 ELSE 1 END), pal.product_id",
                     $search_patterns[0],
                     $search_patterns[1],
                     $search_patterns[0],
@@ -195,8 +199,16 @@ class WooVariationSearch {
                 
                 if ( $tonalidade_products ) {
                     foreach ( $tonalidade_products as $row ) {
-                        if ( ! isset( $matched[ $row->parent_id ] ) ) {
-                            $matched[ $row->parent_id ] = (int) $row->variation_id;
+                        $parent_id = (int) $row->parent_id;
+                        $variation_id = (int) $row->variation_id;
+                        $has_image = (int) $row->has_image > 0;
+                        
+                        if ( ! isset( $matched[ $parent_id ] ) ) {
+                            if ( $has_image ) {
+                                $matched[ $parent_id ] = $variation_id;
+                            } elseif ( ! isset( $matched_without_image[ $parent_id ] ) ) {
+                                $matched_without_image[ $parent_id ] = $variation_id;
+                            }
                         }
                     }
                 }
@@ -204,12 +216,14 @@ class WooVariationSearch {
                 $term_taxonomy_table = $wpdb->prefix . 'term_taxonomy';
                 
                 $variations = $wpdb->get_results( $wpdb->prepare(
-                    "SELECT p.ID as variation_id, p.post_parent as parent_id
+                    "SELECT p.ID as variation_id, p.post_parent as parent_id,
+                            COALESCE(pm_img.meta_value, 0) as has_image
                     FROM {$wpdb->posts} p
                     INNER JOIN {$wpdb->postmeta} pm_attr ON p.ID = pm_attr.post_id AND pm_attr.meta_key = 'attribute_pa_cores-de-tecidos'
                     INNER JOIN {$wpdb->postmeta} pm_stock ON p.ID = pm_stock.post_id AND pm_stock.meta_key = '_stock_status'
                     INNER JOIN {$terms_table} t ON pm_attr.meta_value = t.slug OR pm_attr.meta_value = t.name
                     INNER JOIN {$term_taxonomy_table} tt ON t.term_id = tt.term_id AND tt.taxonomy = 'pa_cores-de-tecidos'
+                    LEFT JOIN {$wpdb->postmeta} pm_img ON p.ID = pm_img.post_id AND pm_img.meta_key = '_thumbnail_id'
                     WHERE p.post_type = 'product_variation'
                     AND p.post_status = 'publish'
                     AND pm_stock.meta_value IN ('instock', 'onbackorder')
@@ -219,7 +233,7 @@ class WooVariationSearch {
                         OR t.slug LIKE %s
                         OR t.slug LIKE %s
                     )
-                    ORDER BY p.post_parent, p.ID",
+                    ORDER BY p.post_parent, (CASE WHEN pm_img.meta_value > 0 THEN 0 ELSE 1 END), p.ID",
                     $search_patterns[0],
                     $search_patterns[1],
                     $search_patterns[0],
@@ -228,11 +242,25 @@ class WooVariationSearch {
                 
                 if ( $variations ) {
                     foreach ( $variations as $row ) {
-                        if ( ! isset( $matched[ $row->parent_id ] ) ) {
-                            $matched[ $row->parent_id ] = (int) $row->variation_id;
+                        $parent_id = (int) $row->parent_id;
+                        $variation_id = (int) $row->variation_id;
+                        $has_image = (int) $row->has_image > 0;
+                        
+                        if ( ! isset( $matched[ $parent_id ] ) ) {
+                            if ( $has_image ) {
+                                $matched[ $parent_id ] = $variation_id;
+                            } elseif ( ! isset( $matched_without_image[ $parent_id ] ) ) {
+                                $matched_without_image[ $parent_id ] = $variation_id;
+                            }
                         }
                     }
                 }
+            }
+        }
+        
+        foreach ( $matched_without_image as $parent_id => $variation_id ) {
+            if ( ! isset( $matched[ $parent_id ] ) ) {
+                $matched[ $parent_id ] = $variation_id;
             }
         }
         
