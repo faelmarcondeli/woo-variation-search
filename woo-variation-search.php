@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WooCommerce Variation Search
  * Description: Integra a busca AJAX do tema Flatsome com variações de produtos WooCommerce
- * Version: 1.8
+ * Version: 2.0
  * Author: Custom
  * Requires PHP: 7.4
  * Requires at least: 6.0
@@ -18,16 +18,18 @@ class WooVariationSearch {
     private static $instance = null;
     private static $is_our_search = false;
     
+    private $color_product_ids = array();
+    private $matched_variations_cache = array();
+    private $variation_objects_cache = array();
+    private $is_search_results = false;
+    private $current_search_query = '';
+    
     public static function get_instance() {
         if ( self::$instance === null ) {
             self::$instance = new self();
         }
         return self::$instance;
     }
-    
-    private $color_product_ids = array();
-    private $matched_variations_cache = array();
-    private $is_search_results = false;
     
     private function __construct() {
         add_action( 'template_redirect', array( $this, 'redirect_product_search' ) );
@@ -42,6 +44,75 @@ class WooVariationSearch {
         }
     }
     
+    /**
+     * Helper: Get cached variation object
+     */
+    private function get_cached_variation( $variation_id ) {
+        if ( ! isset( $this->variation_objects_cache[ $variation_id ] ) ) {
+            $this->variation_objects_cache[ $variation_id ] = wc_get_product( $variation_id );
+        }
+        return $this->variation_objects_cache[ $variation_id ];
+    }
+    
+    /**
+     * Helper: Build query args from variation attributes
+     */
+    private function build_variation_query_args( $variation ) {
+        if ( ! $variation || ! $variation->is_type( 'variation' ) ) {
+            return array();
+        }
+        
+        $attributes = $variation->get_attributes();
+        
+        if ( empty( $attributes ) ) {
+            return array();
+        }
+        
+        $query_args = array();
+        foreach ( $attributes as $attribute_name => $attribute_value ) {
+            if ( ! empty( $attribute_value ) ) {
+                $query_args[ 'attribute_' . $attribute_name ] = $attribute_value;
+            }
+        }
+        
+        return $query_args;
+    }
+    
+    /**
+     * Helper: Add variation attributes to permalink
+     */
+    private function append_variation_params_to_url( $permalink, $product_id ) {
+        if ( ! isset( $this->matched_variations_cache[ $product_id ] ) ) {
+            return $permalink;
+        }
+        
+        $variation_id = $this->matched_variations_cache[ $product_id ];
+        $variation = $this->get_cached_variation( $variation_id );
+        $query_args = $this->build_variation_query_args( $variation );
+        
+        if ( ! empty( $query_args ) ) {
+            $permalink = add_query_arg( $query_args, $permalink );
+        }
+        
+        return $permalink;
+    }
+    
+    /**
+     * Helper: Get matched variations with caching
+     */
+    private function get_cached_matched_variations( $search ) {
+        $cache_key = md5( $search );
+        
+        if ( $this->current_search_query === $cache_key && ! empty( $this->matched_variations_cache ) ) {
+            return $this->matched_variations_cache;
+        }
+        
+        $this->current_search_query = $cache_key;
+        $this->matched_variations_cache = $this->get_matched_variations( $search );
+        
+        return $this->matched_variations_cache;
+    }
+    
     public function setup_search_image_filter() {
         $search = isset( $_GET['s'] ) ? sanitize_text_field( $_GET['s'] ) : '';
         
@@ -53,7 +124,7 @@ class WooVariationSearch {
             return;
         }
         
-        $this->matched_variations_cache = $this->get_matched_variations( $search );
+        $this->matched_variations_cache = $this->get_cached_matched_variations( $search );
         
         if ( ! empty( $this->matched_variations_cache ) ) {
             $this->is_search_results = true;
@@ -68,24 +139,8 @@ class WooVariationSearch {
         $variation_data = array();
         
         foreach ( $this->matched_variations_cache as $product_id => $variation_id ) {
-            $variation = wc_get_product( $variation_id );
-            
-            if ( ! $variation || ! $variation->is_type( 'variation' ) ) {
-                continue;
-            }
-            
-            $attributes = $variation->get_attributes();
-            
-            if ( empty( $attributes ) ) {
-                continue;
-            }
-            
-            $query_params = array();
-            foreach ( $attributes as $attr_name => $attr_value ) {
-                if ( ! empty( $attr_value ) ) {
-                    $query_params[ 'attribute_' . $attr_name ] = $attr_value;
-                }
-            }
+            $variation = $this->get_cached_variation( $variation_id );
+            $query_params = $this->build_variation_query_args( $variation );
             
             if ( ! empty( $query_params ) ) {
                 $variation_data[ $product_id ] = $query_params;
@@ -131,45 +186,11 @@ class WooVariationSearch {
     }
     
     public function filter_product_permalink( $permalink, $post ) {
-        if ( ! $this->is_search_results ) {
+        if ( ! $this->is_search_results || $post->post_type !== 'product' ) {
             return $permalink;
         }
         
-        if ( $post->post_type !== 'product' ) {
-            return $permalink;
-        }
-        
-        $product_id = $post->ID;
-        
-        if ( ! isset( $this->matched_variations_cache[ $product_id ] ) ) {
-            return $permalink;
-        }
-        
-        $variation_id = $this->matched_variations_cache[ $product_id ];
-        $variation = wc_get_product( $variation_id );
-        
-        if ( ! $variation || ! $variation->is_type( 'variation' ) ) {
-            return $permalink;
-        }
-        
-        $attributes = $variation->get_attributes();
-        
-        if ( empty( $attributes ) ) {
-            return $permalink;
-        }
-        
-        $query_args = array();
-        foreach ( $attributes as $attribute_name => $attribute_value ) {
-            if ( ! empty( $attribute_value ) ) {
-                $query_args[ 'attribute_' . $attribute_name ] = $attribute_value;
-            }
-        }
-        
-        if ( ! empty( $query_args ) ) {
-            $permalink = add_query_arg( $query_args, $permalink );
-        }
-        
-        return $permalink;
+        return $this->append_variation_params_to_url( $permalink, $post->ID );
     }
     
     public function filter_product_link( $permalink, $product ) {
@@ -177,37 +198,7 @@ class WooVariationSearch {
             return $permalink;
         }
         
-        $product_id = $product->get_id();
-        
-        if ( ! isset( $this->matched_variations_cache[ $product_id ] ) ) {
-            return $permalink;
-        }
-        
-        $variation_id = $this->matched_variations_cache[ $product_id ];
-        $variation = wc_get_product( $variation_id );
-        
-        if ( ! $variation || ! $variation->is_type( 'variation' ) ) {
-            return $permalink;
-        }
-        
-        $attributes = $variation->get_attributes();
-        
-        if ( empty( $attributes ) ) {
-            return $permalink;
-        }
-        
-        $query_args = array();
-        foreach ( $attributes as $attribute_name => $attribute_value ) {
-            if ( ! empty( $attribute_value ) ) {
-                $query_args[ 'attribute_' . $attribute_name ] = $attribute_value;
-            }
-        }
-        
-        if ( ! empty( $query_args ) ) {
-            $permalink = add_query_arg( $query_args, $permalink );
-        }
-        
-        return $permalink;
+        return $this->append_variation_params_to_url( $permalink, $product->get_id() );
     }
     
     public function filter_product_image_html( $image, $product, $size, $attr, $placeholder ) {
@@ -222,7 +213,7 @@ class WooVariationSearch {
         }
         
         $variation_id = $this->matched_variations_cache[ $product_id ];
-        $variation = wc_get_product( $variation_id );
+        $variation = $this->get_cached_variation( $variation_id );
         
         if ( ! $variation ) {
             return $image;
@@ -246,8 +237,7 @@ class WooVariationSearch {
             return;
         }
         
-        $matched_variations = $this->get_matched_variations( $search );
-        $this->matched_variations_cache = $matched_variations;
+        $matched_variations = $this->get_cached_matched_variations( $search );
         $this->color_product_ids = ! empty( $matched_variations ) ? array_keys( $matched_variations ) : array();
         
         global $wpdb;
@@ -398,6 +388,11 @@ class WooVariationSearch {
         
         $table_exists = $wpdb->get_var( "SHOW TABLES LIKE '{$lookup_table}'" );
         
+        $search_patterns = array(
+            '%' . $wpdb->esc_like( $search_original ) . '%',
+            '%' . $wpdb->esc_like( $search_sanitized ) . '%'
+        );
+        
         if ( $table_exists ) {
             $color_products = $wpdb->get_results( $wpdb->prepare(
                 "SELECT pal.product_or_parent_id as parent_id, pal.product_id as variation_id
@@ -414,10 +409,10 @@ class WooVariationSearch {
                     OR t.slug LIKE %s
                 )
                 ORDER BY pal.product_or_parent_id, pal.product_id",
-                '%' . $wpdb->esc_like( $search_original ) . '%',
-                '%' . $wpdb->esc_like( $search_sanitized ) . '%',
-                '%' . $wpdb->esc_like( $search_original ) . '%',
-                '%' . $wpdb->esc_like( $search_sanitized ) . '%'
+                $search_patterns[0],
+                $search_patterns[1],
+                $search_patterns[0],
+                $search_patterns[1]
             ) );
             
             if ( $color_products ) {
@@ -450,10 +445,10 @@ class WooVariationSearch {
                 OR t.slug LIKE %s
             )
             ORDER BY p.post_parent, p.ID",
-            '%' . $wpdb->esc_like( $search_original ) . '%',
-            '%' . $wpdb->esc_like( $search_sanitized ) . '%',
-            '%' . $wpdb->esc_like( $search_original ) . '%',
-            '%' . $wpdb->esc_like( $search_sanitized ) . '%'
+            $search_patterns[0],
+            $search_patterns[1],
+            $search_patterns[0],
+            $search_patterns[1]
         ) );
         
         if ( $variations ) {
@@ -477,16 +472,12 @@ class WooVariationSearch {
         $search_lower = mb_strtolower( $search );
         $search_escaped = '%' . $wpdb->esc_like( $search_lower ) . '%';
         
-        $term_taxonomy_table = $wpdb->prefix . 'term_taxonomy';
-        $term_relationships_table = $wpdb->prefix . 'term_relationships';
-        $terms_table = $wpdb->prefix . 'terms';
-        
         $product_ids = $wpdb->get_col( $wpdb->prepare(
             "SELECT DISTINCT p.ID
             FROM {$wpdb->posts} p
-            INNER JOIN {$term_relationships_table} tr ON p.ID = tr.object_id
-            INNER JOIN {$term_taxonomy_table} tt ON tr.term_taxonomy_id = tt.term_taxonomy_id
-            INNER JOIN {$terms_table} t ON tt.term_id = t.term_id
+            INNER JOIN {$wpdb->term_relationships} tr ON p.ID = tr.object_id
+            INNER JOIN {$wpdb->term_taxonomy} tt ON tr.term_taxonomy_id = tt.term_taxonomy_id
+            INNER JOIN {$wpdb->terms} t ON tt.term_id = t.term_id
             WHERE p.post_type = 'product'
             AND p.post_status = 'publish'
             AND tt.taxonomy = 'product_tag'
@@ -499,29 +490,19 @@ class WooVariationSearch {
     }
     
     private function get_variation_image_url( $product_id, $matched_variations ) {
-        $image_id = 0;
-        
-        $product = wc_get_product( $product_id );
-        if ( $product ) {
-            $image_id = $product->get_image_id();
-        }
-        
         if ( isset( $matched_variations[ $product_id ] ) ) {
-            $variation_id = $matched_variations[ $product_id ];
-            
-            $variation = wc_get_product( $variation_id );
+            $variation = $this->get_cached_variation( $matched_variations[ $product_id ] );
             if ( $variation && $variation->get_image_id() ) {
-                $image_id = $variation->get_image_id();
-            } else {
-                $variation_image_id = get_post_meta( $variation_id, '_thumbnail_id', true );
-                if ( $variation_image_id && (int) $variation_image_id > 0 ) {
-                    $image_id = (int) $variation_image_id;
+                $product_image = wp_get_attachment_image_src( $variation->get_image_id(), 'woocommerce_thumbnail' );
+                if ( $product_image ) {
+                    return $product_image[0];
                 }
             }
         }
         
-        if ( $image_id ) {
-            $product_image = wp_get_attachment_image_src( $image_id, 'woocommerce_thumbnail' );
+        $product = wc_get_product( $product_id );
+        if ( $product && $product->get_image_id() ) {
+            $product_image = wp_get_attachment_image_src( $product->get_image_id(), 'woocommerce_thumbnail' );
             return $product_image ? $product_image[0] : '';
         }
         
@@ -536,25 +517,8 @@ class WooVariationSearch {
             return $permalink;
         }
         
-        $variation_id = $matched_variations[ $product_id ];
-        $variation = wc_get_product( $variation_id );
-        
-        if ( ! $variation || ! $variation->is_type( 'variation' ) ) {
-            return $permalink;
-        }
-        
-        $attributes = $variation->get_attributes();
-        
-        if ( empty( $attributes ) ) {
-            return $permalink;
-        }
-        
-        $query_args = array();
-        foreach ( $attributes as $attribute_name => $attribute_value ) {
-            if ( ! empty( $attribute_value ) ) {
-                $query_args[ 'attribute_' . $attribute_name ] = $attribute_value;
-            }
-        }
+        $variation = $this->get_cached_variation( $matched_variations[ $product_id ] );
+        $query_args = $this->build_variation_query_args( $variation );
         
         if ( ! empty( $query_args ) ) {
             $permalink = add_query_arg( $query_args, $permalink );
@@ -586,10 +550,6 @@ class WooVariationSearch {
         }
         
         $wc_activated = function_exists( 'is_woocommerce_activated' ) ? is_woocommerce_activated() : class_exists( 'WooCommerce' );
-        $products     = array();
-        $posts        = array();
-        $sku_products = array();
-        $tag_products = array();
         $suggestions  = array();
 
         $args = array(
@@ -603,8 +563,7 @@ class WooVariationSearch {
             'suppress_filters'    => true,
         );
 
-        $matched_variations = $this->get_matched_variations( $query );
-        $this->matched_variations_cache = $matched_variations;
+        $matched_variations = $this->get_cached_matched_variations( $query );
         $added_ids = array();
 
         if ( $wc_activated ) {
@@ -620,11 +579,9 @@ class WooVariationSearch {
             ) );
             
             $color_product_ids = ! empty( $matched_variations ) ? array_keys( $matched_variations ) : array();
-            
             $tag_product_ids = $this->get_products_by_tag( $query );
             
             $merged_ids = array_unique( array_merge( $title_product_ids, $color_product_ids, $tag_product_ids ) );
-            
             $in_stock_ids = $this->filter_in_stock_products( $merged_ids );
             
             foreach ( $in_stock_ids as $product_id ) {
@@ -698,7 +655,7 @@ class WooVariationSearch {
         }
 
         if ( function_exists( 'flatsome_unique_suggestions' ) ) {
-            $suggestions = flatsome_unique_suggestions( array( $products, $sku_products, $tag_products ), $suggestions );
+            $suggestions = flatsome_unique_suggestions( array(), $suggestions );
         }
 
         self::$is_our_search = false;
