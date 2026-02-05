@@ -3,7 +3,7 @@
  * Plugin Name: WooCommerce Variation Search
  * Description: Integra a busca AJAX do tema Flatsome com variações de produtos WooCommerce
  * Version: 2.0
- * Author: Custom
+ * Author: Rafael Moreno
  * Requires PHP: 7.4
  * Requires at least: 6.0
  * WC requires at least: 6.3
