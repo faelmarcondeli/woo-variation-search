@@ -118,15 +118,12 @@ class WooVariationSearch {
     
     /**
      * Setup filter for tonalidades-de-tecidos widget
+     * When a customer filters by tonalidade (e.g., "Azul"), show variation images matching that color
      */
     public function setup_tonalidade_filter() {
         $filter_value = isset( $_GET['filter_tonalidades-de-tecidos'] ) ? sanitize_text_field( $_GET['filter_tonalidades-de-tecidos'] ) : '';
         
         if ( empty( $filter_value ) ) {
-            return;
-        }
-        
-        if ( ! is_shop() && ! is_product_category() && ! is_product_tag() ) {
             return;
         }
         
@@ -143,16 +140,17 @@ class WooVariationSearch {
     }
     
     /**
-     * Get variations by tonalidade slug (used by filter widget)
+     * Get variations by tonalidade filter value (used by filter widget)
+     * Works like search - uses LIKE to find variations with matching color names
      */
-    private function get_variations_by_tonalidade_slug( $slug ) {
+    private function get_variations_by_tonalidade_slug( $filter_value ) {
         global $wpdb;
         
-        if ( empty( $slug ) ) {
+        if ( empty( $filter_value ) ) {
             return array();
         }
         
-        $slugs = array_map( 'sanitize_title', explode( ',', $slug ) );
+        $terms = array_map( 'trim', explode( ',', $filter_value ) );
         
         $matched = array();
         $lookup_table = $wpdb->prefix . 'wc_product_attributes_lookup';
@@ -160,58 +158,80 @@ class WooVariationSearch {
         
         $table_exists = $wpdb->get_var( "SHOW TABLES LIKE '{$lookup_table}'" );
         
-        $slug_placeholders = implode( ',', array_fill( 0, count( $slugs ), '%s' ) );
-        
-        if ( $table_exists ) {
-            $query = $wpdb->prepare(
-                "SELECT pal.product_or_parent_id as parent_id, pal.product_id as variation_id
-                FROM {$lookup_table} pal
-                INNER JOIN {$terms_table} t ON pal.term_id = t.term_id
-                INNER JOIN {$wpdb->postmeta} pm ON pal.product_id = pm.post_id AND pm.meta_key = '_stock_status'
-                WHERE pal.taxonomy = 'pa_tonalidades-de-tecidos'
-                AND pal.is_variation_attribute = 1
-                AND pm.meta_value IN ('instock', 'onbackorder')
-                AND t.slug IN ({$slug_placeholders})
-                ORDER BY pal.product_or_parent_id, pal.product_id",
-                ...$slugs
-            );
+        foreach ( $terms as $term ) {
+            $term_original = mb_strtolower( trim( $term ) );
+            $term_sanitized = sanitize_title( remove_accents( $term ) );
             
-            $tonalidade_products = $wpdb->get_results( $query );
-            
-            if ( $tonalidade_products ) {
-                foreach ( $tonalidade_products as $row ) {
-                    if ( ! isset( $matched[ $row->parent_id ] ) ) {
-                        $matched[ $row->parent_id ] = (int) $row->variation_id;
-                    }
-                }
+            if ( empty( $term_original ) ) {
+                continue;
             }
             
-            return $matched;
-        }
-        
-        $term_taxonomy_table = $wpdb->prefix . 'term_taxonomy';
-        
-        $query = $wpdb->prepare(
-            "SELECT p.ID as variation_id, p.post_parent as parent_id
-            FROM {$wpdb->posts} p
-            INNER JOIN {$wpdb->postmeta} pm_attr ON p.ID = pm_attr.post_id AND pm_attr.meta_key = 'attribute_pa_tonalidades-de-tecidos'
-            INNER JOIN {$wpdb->postmeta} pm_stock ON p.ID = pm_stock.post_id AND pm_stock.meta_key = '_stock_status'
-            INNER JOIN {$terms_table} t ON pm_attr.meta_value = t.slug
-            INNER JOIN {$term_taxonomy_table} tt ON t.term_id = tt.term_id AND tt.taxonomy = 'pa_tonalidades-de-tecidos'
-            WHERE p.post_type = 'product_variation'
-            AND p.post_status = 'publish'
-            AND pm_stock.meta_value IN ('instock', 'onbackorder')
-            AND t.slug IN ({$slug_placeholders})
-            ORDER BY p.post_parent, p.ID",
-            ...$slugs
-        );
-        
-        $variations = $wpdb->get_results( $query );
-        
-        if ( $variations ) {
-            foreach ( $variations as $row ) {
-                if ( ! isset( $matched[ $row->parent_id ] ) ) {
-                    $matched[ $row->parent_id ] = (int) $row->variation_id;
+            $search_patterns = array(
+                '%' . $wpdb->esc_like( $term_original ) . '%',
+                '%' . $wpdb->esc_like( $term_sanitized ) . '%'
+            );
+            
+            if ( $table_exists ) {
+                $tonalidade_products = $wpdb->get_results( $wpdb->prepare(
+                    "SELECT pal.product_or_parent_id as parent_id, pal.product_id as variation_id
+                    FROM {$lookup_table} pal
+                    INNER JOIN {$terms_table} t ON pal.term_id = t.term_id
+                    INNER JOIN {$wpdb->postmeta} pm ON pal.product_id = pm.post_id AND pm.meta_key = '_stock_status'
+                    WHERE pal.taxonomy = 'pa_cores-de-tecidos'
+                    AND pal.is_variation_attribute = 1
+                    AND pm.meta_value IN ('instock', 'onbackorder')
+                    AND (
+                        LOWER(t.name) LIKE %s
+                        OR LOWER(t.name) LIKE %s
+                        OR t.slug LIKE %s
+                        OR t.slug LIKE %s
+                    )
+                    ORDER BY pal.product_or_parent_id, pal.product_id",
+                    $search_patterns[0],
+                    $search_patterns[1],
+                    $search_patterns[0],
+                    $search_patterns[1]
+                ) );
+                
+                if ( $tonalidade_products ) {
+                    foreach ( $tonalidade_products as $row ) {
+                        if ( ! isset( $matched[ $row->parent_id ] ) ) {
+                            $matched[ $row->parent_id ] = (int) $row->variation_id;
+                        }
+                    }
+                }
+            } else {
+                $term_taxonomy_table = $wpdb->prefix . 'term_taxonomy';
+                
+                $variations = $wpdb->get_results( $wpdb->prepare(
+                    "SELECT p.ID as variation_id, p.post_parent as parent_id
+                    FROM {$wpdb->posts} p
+                    INNER JOIN {$wpdb->postmeta} pm_attr ON p.ID = pm_attr.post_id AND pm_attr.meta_key = 'attribute_pa_cores-de-tecidos'
+                    INNER JOIN {$wpdb->postmeta} pm_stock ON p.ID = pm_stock.post_id AND pm_stock.meta_key = '_stock_status'
+                    INNER JOIN {$terms_table} t ON pm_attr.meta_value = t.slug OR pm_attr.meta_value = t.name
+                    INNER JOIN {$term_taxonomy_table} tt ON t.term_id = tt.term_id AND tt.taxonomy = 'pa_cores-de-tecidos'
+                    WHERE p.post_type = 'product_variation'
+                    AND p.post_status = 'publish'
+                    AND pm_stock.meta_value IN ('instock', 'onbackorder')
+                    AND (
+                        LOWER(t.name) LIKE %s
+                        OR LOWER(t.name) LIKE %s
+                        OR t.slug LIKE %s
+                        OR t.slug LIKE %s
+                    )
+                    ORDER BY p.post_parent, p.ID",
+                    $search_patterns[0],
+                    $search_patterns[1],
+                    $search_patterns[0],
+                    $search_patterns[1]
+                ) );
+                
+                if ( $variations ) {
+                    foreach ( $variations as $row ) {
+                        if ( ! isset( $matched[ $row->parent_id ] ) ) {
+                            $matched[ $row->parent_id ] = (int) $row->variation_id;
+                        }
+                    }
                 }
             }
         }
