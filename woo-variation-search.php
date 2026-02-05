@@ -2,8 +2,8 @@
 /**
  * Plugin Name: WooCommerce Variation Search
  * Description: Integra a busca AJAX do tema Flatsome com variações de produtos WooCommerce
- * Version: 2.0
- * Author: Rafael Moreno
+ * Version: 2.1
+ * Author: Custom
  * Requires PHP: 7.4
  * Requires at least: 6.0
  * WC requires at least: 6.3
@@ -22,7 +22,9 @@ class WooVariationSearch {
     private $matched_variations_cache = array();
     private $variation_objects_cache = array();
     private $is_search_results = false;
+    private $is_filter_results = false;
     private $current_search_query = '';
+    private $current_filter_term = '';
     
     public static function get_instance() {
         if ( self::$instance === null ) {
@@ -34,6 +36,7 @@ class WooVariationSearch {
     private function __construct() {
         add_action( 'template_redirect', array( $this, 'redirect_product_search' ) );
         add_action( 'wp', array( $this, 'setup_search_image_filter' ) );
+        add_action( 'wp', array( $this, 'setup_tonalidade_filter' ) );
         add_action( 'woocommerce_product_query', array( $this, 'modify_wc_product_query' ), 999 );
         
         if ( get_theme_mod( 'search_live_search', 1 ) ) {
@@ -113,6 +116,109 @@ class WooVariationSearch {
         return $this->matched_variations_cache;
     }
     
+    /**
+     * Setup filter for tonalidades-de-tecidos widget
+     */
+    public function setup_tonalidade_filter() {
+        $filter_value = isset( $_GET['filter_tonalidades-de-tecidos'] ) ? sanitize_text_field( $_GET['filter_tonalidades-de-tecidos'] ) : '';
+        
+        if ( empty( $filter_value ) ) {
+            return;
+        }
+        
+        if ( ! is_shop() && ! is_product_category() && ! is_product_tag() ) {
+            return;
+        }
+        
+        $this->current_filter_term = $filter_value;
+        $this->matched_variations_cache = $this->get_variations_by_tonalidade_slug( $filter_value );
+        
+        if ( ! empty( $this->matched_variations_cache ) ) {
+            $this->is_filter_results = true;
+            add_filter( 'woocommerce_product_get_image', array( $this, 'filter_product_image_html' ), 999, 5 );
+            add_filter( 'woocommerce_loop_product_link', array( $this, 'filter_product_link' ), 999, 2 );
+            add_filter( 'post_type_link', array( $this, 'filter_product_permalink' ), 999, 2 );
+            add_action( 'wp_footer', array( $this, 'add_variation_link_script' ) );
+        }
+    }
+    
+    /**
+     * Get variations by tonalidade slug (used by filter widget)
+     */
+    private function get_variations_by_tonalidade_slug( $slug ) {
+        global $wpdb;
+        
+        if ( empty( $slug ) ) {
+            return array();
+        }
+        
+        $slugs = array_map( 'sanitize_title', explode( ',', $slug ) );
+        
+        $matched = array();
+        $lookup_table = $wpdb->prefix . 'wc_product_attributes_lookup';
+        $terms_table = $wpdb->prefix . 'terms';
+        
+        $table_exists = $wpdb->get_var( "SHOW TABLES LIKE '{$lookup_table}'" );
+        
+        $slug_placeholders = implode( ',', array_fill( 0, count( $slugs ), '%s' ) );
+        
+        if ( $table_exists ) {
+            $query = $wpdb->prepare(
+                "SELECT pal.product_or_parent_id as parent_id, pal.product_id as variation_id
+                FROM {$lookup_table} pal
+                INNER JOIN {$terms_table} t ON pal.term_id = t.term_id
+                INNER JOIN {$wpdb->postmeta} pm ON pal.product_id = pm.post_id AND pm.meta_key = '_stock_status'
+                WHERE pal.taxonomy = 'pa_tonalidades-de-tecidos'
+                AND pal.is_variation_attribute = 1
+                AND pm.meta_value IN ('instock', 'onbackorder')
+                AND t.slug IN ({$slug_placeholders})
+                ORDER BY pal.product_or_parent_id, pal.product_id",
+                ...$slugs
+            );
+            
+            $tonalidade_products = $wpdb->get_results( $query );
+            
+            if ( $tonalidade_products ) {
+                foreach ( $tonalidade_products as $row ) {
+                    if ( ! isset( $matched[ $row->parent_id ] ) ) {
+                        $matched[ $row->parent_id ] = (int) $row->variation_id;
+                    }
+                }
+            }
+            
+            return $matched;
+        }
+        
+        $term_taxonomy_table = $wpdb->prefix . 'term_taxonomy';
+        
+        $query = $wpdb->prepare(
+            "SELECT p.ID as variation_id, p.post_parent as parent_id
+            FROM {$wpdb->posts} p
+            INNER JOIN {$wpdb->postmeta} pm_attr ON p.ID = pm_attr.post_id AND pm_attr.meta_key = 'attribute_pa_tonalidades-de-tecidos'
+            INNER JOIN {$wpdb->postmeta} pm_stock ON p.ID = pm_stock.post_id AND pm_stock.meta_key = '_stock_status'
+            INNER JOIN {$terms_table} t ON pm_attr.meta_value = t.slug
+            INNER JOIN {$term_taxonomy_table} tt ON t.term_id = tt.term_id AND tt.taxonomy = 'pa_tonalidades-de-tecidos'
+            WHERE p.post_type = 'product_variation'
+            AND p.post_status = 'publish'
+            AND pm_stock.meta_value IN ('instock', 'onbackorder')
+            AND t.slug IN ({$slug_placeholders})
+            ORDER BY p.post_parent, p.ID",
+            ...$slugs
+        );
+        
+        $variations = $wpdb->get_results( $query );
+        
+        if ( $variations ) {
+            foreach ( $variations as $row ) {
+                if ( ! isset( $matched[ $row->parent_id ] ) ) {
+                    $matched[ $row->parent_id ] = (int) $row->variation_id;
+                }
+            }
+        }
+        
+        return $matched;
+    }
+    
     public function setup_search_image_filter() {
         $search = isset( $_GET['s'] ) ? sanitize_text_field( $_GET['s'] ) : '';
         
@@ -186,7 +292,7 @@ class WooVariationSearch {
     }
     
     public function filter_product_permalink( $permalink, $post ) {
-        if ( ! $this->is_search_results || $post->post_type !== 'product' ) {
+        if ( ( ! $this->is_search_results && ! $this->is_filter_results ) || $post->post_type !== 'product' ) {
             return $permalink;
         }
         
@@ -194,7 +300,7 @@ class WooVariationSearch {
     }
     
     public function filter_product_link( $permalink, $product ) {
-        if ( ! $this->is_search_results ) {
+        if ( ! $this->is_search_results && ! $this->is_filter_results ) {
             return $permalink;
         }
         
@@ -202,7 +308,7 @@ class WooVariationSearch {
     }
     
     public function filter_product_image_html( $image, $product, $size, $attr, $placeholder ) {
-        if ( ! $this->is_search_results ) {
+        if ( ! $this->is_search_results && ! $this->is_filter_results ) {
             return $image;
         }
         
