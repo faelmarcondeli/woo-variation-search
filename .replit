@@ -1,4 +1,4 @@
-modules = ["php-8.2", "php-8.3"]
+modules = ["php-8.2"]
 [agent]
 expertMode = true
 
