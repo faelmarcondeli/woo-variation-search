@@ -2,4 +2,6 @@
 
 A integração permite pesquisar produtos por atributo usando a barra de pesquisa do tema Flatsome com ajax. É usado o recurso de tabela de pesquisa de atributos do produto (Product Attribute Lookup Table) do woocommerce.
 
-Na pesquisa de produtos variáveis é exibida a imagem de capa equivalente a variação do produto
+Na pesquisa de produtos variáveis é exibida a imagem de capa equivalente a variação do produto.
+
+Para o widget que realiza a filtragem por tonalidades (filter_tonalidades-de-tecidos) é exibida a imagem de capa das variações correspondetes a cor filtrada.
