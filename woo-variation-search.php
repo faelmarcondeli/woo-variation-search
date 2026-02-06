@@ -437,14 +437,22 @@ class WooVariationSearch {
             return;
         }
         
-        $this->matched_variations_cache = $this->get_cached_matched_variations( $search );
+        $multi_variations = $this->get_matched_variations_multi( $search );
         
-        if ( ! empty( $this->matched_variations_cache ) ) {
+        if ( ! empty( $multi_variations ) ) {
+            foreach ( $multi_variations as $product_id => $variation_ids ) {
+                $this->matched_variations_cache[ $product_id ] = $variation_ids[0];
+            }
+            
+            $this->filter_multi_variations = $multi_variations;
             $this->is_search_results = true;
             add_filter( 'woocommerce_product_get_image', array( $this, 'filter_product_image_html' ), 999, 5 );
             add_filter( 'woocommerce_loop_product_link', array( $this, 'filter_product_link' ), 999, 2 );
             add_filter( 'post_type_link', array( $this, 'filter_product_permalink' ), 999, 2 );
             add_action( 'wp_footer', array( $this, 'add_variation_link_script' ) );
+            
+            add_action( 'woocommerce_before_shop_loop', array( $this, 'start_shop_output_buffer' ), 999 );
+            add_action( 'woocommerce_after_shop_loop', array( $this, 'end_shop_output_buffer' ), 1 );
         }
     }
     
@@ -703,6 +711,91 @@ class WooVariationSearch {
         $image_data = wp_get_attachment_image_src( $variation->get_image_id(), 'woocommerce_thumbnail' );
         
         return $image_data ? $image_data[0] : '';
+    }
+    
+    private function get_matched_variations_multi( $search ) {
+        global $wpdb;
+        
+        if ( empty( $search ) ) {
+            return array();
+        }
+        
+        $search_lower = mb_strtolower( $search );
+        $search_sanitized = sanitize_title( remove_accents( $search ) );
+        
+        $search_patterns = array(
+            '%' . $wpdb->esc_like( $search_lower ) . '%',
+            '%' . $wpdb->esc_like( $search_sanitized ) . '%'
+        );
+        
+        $matched = array();
+        
+        $lookup_table = $wpdb->prefix . 'wc_product_attributes_lookup';
+        $terms_table = $wpdb->prefix . 'terms';
+        
+        $table_exists = $wpdb->get_var( "SHOW TABLES LIKE '{$lookup_table}'" );
+        
+        if ( $table_exists ) {
+            $results = $wpdb->get_results( $wpdb->prepare(
+                "SELECT pal.product_or_parent_id as parent_id, pal.product_id as variation_id
+                FROM {$lookup_table} pal
+                INNER JOIN {$terms_table} t ON pal.term_id = t.term_id
+                INNER JOIN {$wpdb->postmeta} pm ON pal.product_id = pm.post_id AND pm.meta_key = '_stock_status'
+                WHERE pal.taxonomy = 'pa_cores-de-tecidos'
+                AND pal.is_variation_attribute = 1
+                AND pm.meta_value IN ('instock', 'onbackorder')
+                AND (
+                    LOWER(t.name) LIKE %s
+                    OR LOWER(t.name) LIKE %s
+                    OR t.slug LIKE %s
+                    OR t.slug LIKE %s
+                )
+                ORDER BY pal.product_or_parent_id, pal.product_id",
+                $search_patterns[0],
+                $search_patterns[1],
+                $search_patterns[0],
+                $search_patterns[1]
+            ) );
+            
+            if ( $results ) {
+                foreach ( $results as $row ) {
+                    $matched[ $row->parent_id ][] = (int) $row->variation_id;
+                }
+            }
+        } else {
+            $term_taxonomy_table = $wpdb->prefix . 'term_taxonomy';
+            
+            $results = $wpdb->get_results( $wpdb->prepare(
+                "SELECT p.post_parent as parent_id, p.ID as variation_id
+                FROM {$wpdb->posts} p
+                INNER JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id AND pm.meta_key = 'attribute_pa_cores-de-tecidos'
+                INNER JOIN {$wpdb->postmeta} pm_stock ON p.ID = pm_stock.post_id AND pm_stock.meta_key = '_stock_status'
+                INNER JOIN {$terms_table} t ON pm.meta_value = t.slug OR pm.meta_value = t.name
+                INNER JOIN {$term_taxonomy_table} tt ON t.term_id = tt.term_id AND tt.taxonomy = 'pa_cores-de-tecidos'
+                WHERE p.post_type = 'product_variation'
+                AND p.post_status = 'publish'
+                AND pm_stock.meta_value IN ('instock', 'onbackorder')
+                AND (
+                    LOWER(t.name) LIKE %s
+                    OR LOWER(t.name) LIKE %s
+                    OR t.slug LIKE %s
+                    OR t.slug LIKE %s
+                )
+                ORDER BY p.post_parent, p.ID",
+                $search_patterns[0],
+                $search_patterns[1],
+                $search_patterns[0],
+                $search_patterns[1]
+            ) );
+            
+            if ( $results ) {
+                foreach ( $results as $row ) {
+                    $matched[ $row->parent_id ][] = (int) $row->variation_id;
+                }
+            }
+        }
+        
+        return $matched;
     }
     
     private function get_matched_variations( $search ) {
