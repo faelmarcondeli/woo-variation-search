@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WooCommerce Variation Search
  * Description: Integra a busca AJAX do tema Flatsome com variações de produtos WooCommerce
- * Version: 2.2
+ * Version: 2.3
  * Author: Custom
  * Requires PHP: 7.4
  * Requires at least: 6.0
@@ -26,6 +26,8 @@ class WooVariationSearch {
     private $current_search_query = '';
     private $current_filter_term = '';
     private $filter_multi_variations = array();
+    private $variation_queue = array();
+    private $variation_render_index = array();
     
     public static function get_instance() {
         if ( self::$instance === null ) {
@@ -121,6 +123,7 @@ class WooVariationSearch {
     /**
      * Setup filter for tonalidades-de-tecidos widget
      * When a customer filters by tonalidade (e.g., "Azul"), show variation images matching that color
+     * Uses the_posts to duplicate products and the_post to track which variation to render
      */
     public function setup_tonalidade_filter( $query ) {
         if ( $this->is_filter_results ) {
@@ -139,13 +142,82 @@ class WooVariationSearch {
         if ( ! empty( $this->filter_multi_variations ) ) {
             foreach ( $this->filter_multi_variations as $product_id => $variation_ids ) {
                 $this->matched_variations_cache[ $product_id ] = $variation_ids[0];
+                $this->variation_queue[ $product_id ] = $variation_ids;
             }
             
             $this->is_filter_results = true;
+            add_filter( 'the_posts', array( $this, 'duplicate_posts_for_variations' ), 999, 2 );
+            add_action( 'the_post', array( $this, 'track_variation_render_index' ) );
             add_filter( 'woocommerce_product_get_image', array( $this, 'filter_product_image_html' ), 999, 5 );
             add_filter( 'woocommerce_loop_product_link', array( $this, 'filter_product_link' ), 999, 2 );
             add_filter( 'post_type_link', array( $this, 'filter_product_permalink' ), 999, 2 );
-            add_action( 'wp_footer', array( $this, 'add_variation_link_script' ) );
+        }
+    }
+    
+    /**
+     * Duplicate posts for products with multiple matching variations
+     * Each variation gets its own post entry in the loop
+     */
+    public function duplicate_posts_for_variations( $posts, $query ) {
+        if ( empty( $this->filter_multi_variations ) || empty( $posts ) ) {
+            return $posts;
+        }
+        
+        $post_type = $query->get( 'post_type' );
+        $is_product_query = ( $post_type === 'product' || ( is_array( $post_type ) && in_array( 'product', $post_type ) ) );
+        
+        if ( ! $is_product_query ) {
+            return $posts;
+        }
+        
+        $new_posts = array();
+        
+        foreach ( $posts as $post ) {
+            $product_id = $post->ID;
+            
+            if ( isset( $this->filter_multi_variations[ $product_id ] ) && count( $this->filter_multi_variations[ $product_id ] ) > 1 ) {
+                foreach ( $this->filter_multi_variations[ $product_id ] as $variation_id ) {
+                    $cloned = clone $post;
+                    $cloned->_wvs_variation_id = $variation_id;
+                    $new_posts[] = $cloned;
+                }
+            } else {
+                $new_posts[] = $post;
+            }
+        }
+        
+        $query->found_posts = count( $new_posts );
+        $query->post_count = count( $new_posts );
+        
+        return $new_posts;
+    }
+    
+    /**
+     * Track which variation should render for duplicated product posts
+     * Fires via the_post action each time WordPress sets up a post in the loop
+     */
+    public function track_variation_render_index( $post ) {
+        $product_id = $post->ID;
+        
+        if ( ! isset( $this->variation_queue[ $product_id ] ) ) {
+            return;
+        }
+        
+        if ( isset( $post->_wvs_variation_id ) ) {
+            $this->matched_variations_cache[ $product_id ] = (int) $post->_wvs_variation_id;
+        } else {
+            if ( ! isset( $this->variation_render_index[ $product_id ] ) ) {
+                $this->variation_render_index[ $product_id ] = 0;
+            } else {
+                $this->variation_render_index[ $product_id ]++;
+            }
+            
+            $idx = $this->variation_render_index[ $product_id ];
+            $queue = $this->variation_queue[ $product_id ];
+            
+            if ( isset( $queue[ $idx ] ) ) {
+                $this->matched_variations_cache[ $product_id ] = $queue[ $idx ];
+            }
         }
     }
     
@@ -270,137 +342,45 @@ class WooVariationSearch {
     public function add_variation_link_script() {
         $variation_data = array();
         
-        if ( $this->is_filter_results && ! empty( $this->filter_multi_variations ) ) {
-            foreach ( $this->filter_multi_variations as $product_id => $variation_ids ) {
-                $variation_data[ $product_id ] = array();
-                foreach ( $variation_ids as $var_id ) {
-                    $variation = $this->get_cached_variation( $var_id );
-                    if ( ! $variation ) continue;
-                    
-                    $query_params = $this->build_variation_query_args( $variation );
-                    $image_id = $variation->get_image_id();
-                    $image_url = '';
-                    $image_srcset = '';
-                    $image_sizes = '';
-                    
-                    if ( $image_id ) {
-                        $img_src = wp_get_attachment_image_src( $image_id, 'woocommerce_thumbnail' );
-                        $image_url = $img_src ? $img_src[0] : '';
-                        $image_srcset = wp_get_attachment_image_srcset( $image_id, 'woocommerce_thumbnail' );
-                        $image_sizes = wp_get_attachment_image_sizes( $image_id, 'woocommerce_thumbnail' );
-                    }
-                    
-                    $variation_data[ $product_id ][] = array(
-                        'params'      => $query_params,
-                        'image_url'   => $image_url,
-                        'image_srcset' => $image_srcset ? $image_srcset : '',
-                        'image_sizes'  => $image_sizes ? $image_sizes : '',
-                    );
-                }
-            }
-        } else {
-            foreach ( $this->matched_variations_cache as $product_id => $variation_id ) {
-                $variation = $this->get_cached_variation( $variation_id );
-                $query_params = $this->build_variation_query_args( $variation );
-                if ( ! empty( $query_params ) ) {
-                    $variation_data[ $product_id ] = array( array( 'params' => $query_params ) );
-                }
+        foreach ( $this->matched_variations_cache as $product_id => $variation_id ) {
+            $variation = $this->get_cached_variation( $variation_id );
+            $query_params = $this->build_variation_query_args( $variation );
+            if ( ! empty( $query_params ) ) {
+                $variation_data[ $product_id ] = $query_params;
             }
         }
         
         if ( empty( $variation_data ) ) {
             return;
         }
-        
-        $is_multi = $this->is_filter_results && ! empty( $this->filter_multi_variations );
         ?>
         <script type="text/javascript">
         (function() {
             var variationData = <?php echo json_encode( $variation_data ); ?>;
-            var isMultiMode = <?php echo $is_multi ? 'true' : 'false'; ?>;
             
-            function findProductId(productEl) {
-                var classes = productEl.className.split(/\s+/);
-                for (var i = 0; i < classes.length; i++) {
-                    var match = classes[i].match(/^post-(\d+)$/);
-                    if (match) return match[1];
-                }
-                var link = productEl.querySelector('a[href]');
-                if (link) {
-                    var href = link.getAttribute('href');
-                    for (var pid in variationData) {
-                        if (href.indexOf('p=' + pid) !== -1) return pid;
-                    }
-                }
-                return null;
-            }
-            
-            function buildQueryString(params) {
-                return Object.keys(params).map(function(key) {
-                    return encodeURIComponent(key) + '=' + encodeURIComponent(params[key]);
-                }).join('&');
-            }
-            
-            function updateCardLinks(card, originalHref, queryParams) {
-                var qs = buildQueryString(queryParams);
-                var newHref = originalHref + (originalHref.indexOf('?') === -1 ? '?' : '&') + qs;
-                card.querySelectorAll('a').forEach(function(a) {
-                    var aHref = a.getAttribute('href');
-                    if (aHref === originalHref || aHref === newHref) {
-                        a.setAttribute('href', newHref);
-                    }
-                });
-            }
-            
-            function updateCardImage(card, varData) {
-                if (!varData.image_url) return;
-                var img = card.querySelector('.product-image img, .box-image img, .product-thumbnail img');
-                if (!img) return;
-                img.setAttribute('src', varData.image_url);
-                if (varData.image_srcset) {
-                    img.setAttribute('srcset', varData.image_srcset);
-                }
-                if (varData.image_sizes) {
-                    img.setAttribute('sizes', varData.image_sizes);
-                }
-                if (img.dataset && img.dataset.src) {
-                    img.dataset.src = varData.image_url;
-                }
-                if (img.dataset && img.dataset.srcset) {
-                    img.dataset.srcset = varData.image_srcset || '';
-                }
-            }
-            
-            var productCards = document.querySelectorAll('.products .product');
-            
-            productCards.forEach(function(productEl) {
-                var productId = findProductId(productEl);
-                if (!productId || !variationData[productId]) return;
-                
-                var variations = variationData[productId];
-                var link = productEl.querySelector('a.woocommerce-LoopProduct-link, a.plain, a[href]');
+            document.querySelectorAll('.products .product').forEach(function(productEl) {
+                var link = productEl.querySelector('a.woocommerce-LoopProduct-link, a.plain');
                 if (!link) return;
-                var originalHref = link.getAttribute('href');
                 
-                if (variations[0] && variations[0].params) {
-                    updateCardLinks(productEl, originalHref, variations[0].params);
-                }
+                var href = link.getAttribute('href');
+                if (!href) return;
                 
-                if (!isMultiMode || variations.length <= 1) return;
-                
-                for (var i = 1; i < variations.length; i++) {
-                    var clone = productEl.cloneNode(true);
-                    
-                    updateCardImage(clone, variations[i]);
-                    
-                    if (variations[i].params) {
-                        clone.querySelectorAll('a').forEach(function(a) {
-                            a.setAttribute('href', originalHref);
+                for (var productId in variationData) {
+                    if (productEl.classList.contains('post-' + productId)) {
+                        var params = variationData[productId];
+                        var queryString = Object.keys(params).map(function(key) {
+                            return encodeURIComponent(key) + '=' + encodeURIComponent(params[key]);
+                        }).join('&');
+                        
+                        var newHref = href + (href.indexOf('?') === -1 ? '?' : '&') + queryString;
+                        
+                        productEl.querySelectorAll('a').forEach(function(a) {
+                            if (a.getAttribute('href') === href) {
+                                a.setAttribute('href', newHref);
+                            }
                         });
-                        updateCardLinks(clone, originalHref, variations[i].params);
+                        break;
                     }
-                    
-                    productEl.parentNode.insertBefore(clone, productEl.nextSibling);
                 }
             });
         })();
@@ -455,9 +435,17 @@ class WooVariationSearch {
     }
     
     /**
-     * Get current variation ID for a product (first matching variation)
+     * Get current variation ID for a product
+     * In filter mode with queue, returns the variation currently being rendered
+     * In search mode, returns the first matched variation
      */
     private function get_current_variation_for_product( $product_id ) {
+        global $post;
+        
+        if ( $this->is_filter_results && isset( $post->_wvs_variation_id ) ) {
+            return (int) $post->_wvs_variation_id;
+        }
+        
         if ( isset( $this->matched_variations_cache[ $product_id ] ) ) {
             return $this->matched_variations_cache[ $product_id ];
         }
