@@ -4,13 +4,14 @@
 This is a WordPress plugin that integrates the Flatsome theme AJAX search with WooCommerce product variations. It allows customers to search products by attribute values (like color or size).
 
 ## Recent Changes
-- **2026-02-06**: Multi-variation server-side approach (Version 2.3)
+- **2026-02-06**: Output buffering approach for multi-variation (Version 2.4)
   - Shows ALL matching variations per product as separate cards in the grid
   - E.g., "Laranja Claro" and "Laranja Escuro" both appear when filtering by "laranja"
-  - Uses `the_posts` filter to duplicate posts with `_wvs_variation_id` tracking
-  - Uses `the_post` action to update `matched_variations_cache` before each render
-  - `get_current_variation_for_product()` reads variation ID from global `$post->_wvs_variation_id`
-  - Removed JS-based card cloning (unreliable with AJAX filter updates)
+  - Uses output buffering (`woocommerce_before_shop_loop` / `woocommerce_after_shop_loop`) to capture shop loop HTML
+  - `extract_product_card()` finds product card boundaries by `post-{ID}` CSS class with tag-depth counting
+  - `duplicate_variation_cards()` clones card HTML and replaces image src/srcset/data-src and href attributes
+  - Works at HTML level - independent of WooCommerce query system and theme template internals
+  - First variation image still swapped server-side via `filter_product_image_html`
   - LIKE-based matching on `pa_cores-de-tecidos` taxonomy
   - Removed page type restrictions (works on any page)
 

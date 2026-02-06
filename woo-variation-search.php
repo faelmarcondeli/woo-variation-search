@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WooCommerce Variation Search
  * Description: Integra a busca AJAX do tema Flatsome com variações de produtos WooCommerce
- * Version: 2.3
+ * Version: 2.4
  * Author: Custom
  * Requires PHP: 7.4
  * Requires at least: 6.0
@@ -26,8 +26,7 @@ class WooVariationSearch {
     private $current_search_query = '';
     private $current_filter_term = '';
     private $filter_multi_variations = array();
-    private $variation_queue = array();
-    private $variation_render_index = array();
+    private $buffering_active = false;
     
     public static function get_instance() {
         if ( self::$instance === null ) {
@@ -50,9 +49,6 @@ class WooVariationSearch {
         }
     }
     
-    /**
-     * Helper: Get cached variation object
-     */
     private function get_cached_variation( $variation_id ) {
         if ( ! isset( $this->variation_objects_cache[ $variation_id ] ) ) {
             $this->variation_objects_cache[ $variation_id ] = wc_get_product( $variation_id );
@@ -60,9 +56,6 @@ class WooVariationSearch {
         return $this->variation_objects_cache[ $variation_id ];
     }
     
-    /**
-     * Helper: Build query args from variation attributes
-     */
     private function build_variation_query_args( $variation ) {
         if ( ! $variation || ! $variation->is_type( 'variation' ) ) {
             return array();
@@ -84,9 +77,6 @@ class WooVariationSearch {
         return $query_args;
     }
     
-    /**
-     * Helper: Add variation attributes to permalink
-     */
     private function append_variation_params_to_url( $permalink, $product_id ) {
         $variation_id = $this->get_current_variation_for_product( $product_id );
         
@@ -104,9 +94,6 @@ class WooVariationSearch {
         return $permalink;
     }
     
-    /**
-     * Helper: Get matched variations with caching
-     */
     private function get_cached_matched_variations( $search ) {
         $cache_key = md5( $search );
         
@@ -122,8 +109,7 @@ class WooVariationSearch {
     
     /**
      * Setup filter for tonalidades-de-tecidos widget
-     * When a customer filters by tonalidade (e.g., "Azul"), show variation images matching that color
-     * Uses the_posts to duplicate products and the_post to track which variation to render
+     * Uses output buffering to capture shop loop HTML and duplicate product cards
      */
     public function setup_tonalidade_filter( $query ) {
         if ( $this->is_filter_results ) {
@@ -142,89 +128,212 @@ class WooVariationSearch {
         if ( ! empty( $this->filter_multi_variations ) ) {
             foreach ( $this->filter_multi_variations as $product_id => $variation_ids ) {
                 $this->matched_variations_cache[ $product_id ] = $variation_ids[0];
-                $this->variation_queue[ $product_id ] = $variation_ids;
             }
             
             $this->is_filter_results = true;
-            add_filter( 'the_posts', array( $this, 'duplicate_posts_for_variations' ), 999, 2 );
-            add_action( 'the_post', array( $this, 'track_variation_render_index' ) );
             add_filter( 'woocommerce_product_get_image', array( $this, 'filter_product_image_html' ), 999, 5 );
             add_filter( 'woocommerce_loop_product_link', array( $this, 'filter_product_link' ), 999, 2 );
             add_filter( 'post_type_link', array( $this, 'filter_product_permalink' ), 999, 2 );
-        }
-    }
-    
-    /**
-     * Duplicate posts for products with multiple matching variations
-     * Each variation gets its own post entry in the loop
-     */
-    public function duplicate_posts_for_variations( $posts, $query ) {
-        if ( empty( $this->filter_multi_variations ) || empty( $posts ) ) {
-            return $posts;
-        }
-        
-        $post_type = $query->get( 'post_type' );
-        $is_product_query = ( $post_type === 'product' || ( is_array( $post_type ) && in_array( 'product', $post_type ) ) );
-        
-        if ( ! $is_product_query ) {
-            return $posts;
-        }
-        
-        $new_posts = array();
-        
-        foreach ( $posts as $post ) {
-            $product_id = $post->ID;
             
-            if ( isset( $this->filter_multi_variations[ $product_id ] ) && count( $this->filter_multi_variations[ $product_id ] ) > 1 ) {
-                foreach ( $this->filter_multi_variations[ $product_id ] as $variation_id ) {
-                    $cloned = clone $post;
-                    $cloned->_wvs_variation_id = $variation_id;
-                    $new_posts[] = $cloned;
-                }
-            } else {
-                $new_posts[] = $post;
-            }
+            add_action( 'woocommerce_before_shop_loop', array( $this, 'start_shop_output_buffer' ), 999 );
+            add_action( 'woocommerce_after_shop_loop', array( $this, 'end_shop_output_buffer' ), 1 );
         }
-        
-        $query->found_posts = count( $new_posts );
-        $query->post_count = count( $new_posts );
-        
-        return $new_posts;
     }
     
-    /**
-     * Track which variation should render for duplicated product posts
-     * Fires via the_post action each time WordPress sets up a post in the loop
-     */
-    public function track_variation_render_index( $post ) {
-        $product_id = $post->ID;
-        
-        if ( ! isset( $this->variation_queue[ $product_id ] ) ) {
+    public function start_shop_output_buffer() {
+        $this->buffering_active = true;
+        ob_start();
+    }
+    
+    public function end_shop_output_buffer() {
+        if ( ! $this->buffering_active ) {
             return;
         }
-        
-        if ( isset( $post->_wvs_variation_id ) ) {
-            $this->matched_variations_cache[ $product_id ] = (int) $post->_wvs_variation_id;
-        } else {
-            if ( ! isset( $this->variation_render_index[ $product_id ] ) ) {
-                $this->variation_render_index[ $product_id ] = 0;
-            } else {
-                $this->variation_render_index[ $product_id ]++;
-            }
-            
-            $idx = $this->variation_render_index[ $product_id ];
-            $queue = $this->variation_queue[ $product_id ];
-            
-            if ( isset( $queue[ $idx ] ) ) {
-                $this->matched_variations_cache[ $product_id ] = $queue[ $idx ];
-            }
-        }
+        $this->buffering_active = false;
+        $html = ob_get_clean();
+        echo $this->duplicate_variation_cards( $html );
     }
     
     /**
-     * Get variations by tonalidade filter value (used by filter widget)
-     * Works like search - uses LIKE to find variations with matching color names
+     * Find a product card element in HTML by its post-{ID} CSS class
+     * Returns array with 'html', 'start', 'end' or null
      */
+    private function extract_product_card( $html, $product_id ) {
+        $class_marker = 'post-' . $product_id;
+        $pos = strpos( $html, $class_marker );
+        if ( $pos === false ) {
+            return null;
+        }
+        
+        $before = substr( $html, 0, $pos );
+        $tag_start = strrpos( $before, '<' );
+        if ( $tag_start === false ) {
+            return null;
+        }
+        
+        $tag_fragment = substr( $html, $tag_start, 50 );
+        if ( ! preg_match( '/^<(\w+)/', $tag_fragment, $match ) ) {
+            return null;
+        }
+        $tag_name = strtolower( $match[1] );
+        
+        $depth = 0;
+        $len = strlen( $html );
+        $i = $tag_start;
+        
+        while ( $i < $len ) {
+            $next_tag = strpos( $html, '<', $i + 1 );
+            if ( $next_tag === false ) {
+                break;
+            }
+            
+            $chunk = substr( $html, $next_tag, strlen( $tag_name ) + 3 );
+            
+            if ( stripos( $chunk, '</' . $tag_name ) === 0 ) {
+                if ( $depth === 0 ) {
+                    $close_end = strpos( $html, '>', $next_tag );
+                    if ( $close_end === false ) {
+                        break;
+                    }
+                    $close_end++;
+                    $card_html = substr( $html, $tag_start, $close_end - $tag_start );
+                    return array(
+                        'html'  => $card_html,
+                        'start' => $tag_start,
+                        'end'   => $close_end,
+                    );
+                }
+                $depth--;
+                $i = $next_tag + 1;
+            } elseif ( stripos( $chunk, '<' . $tag_name ) === 0 && isset( $chunk[ strlen( $tag_name ) + 1 ] ) && in_array( $chunk[ strlen( $tag_name ) + 1 ], array( ' ', '>', "\t", "\n", "\r", '/' ) ) ) {
+                $self_close_check = substr( $html, $next_tag, 200 );
+                $gt_pos = strpos( $self_close_check, '>' );
+                if ( $gt_pos !== false && substr( $self_close_check, $gt_pos - 1, 1 ) !== '/' ) {
+                    $depth++;
+                }
+                $i = $next_tag + 1;
+            } else {
+                $i = $next_tag + 1;
+            }
+        }
+        
+        return null;
+    }
+    
+    /**
+     * Duplicate product cards in HTML for products with multiple matching variations
+     */
+    private function duplicate_variation_cards( $html ) {
+        if ( empty( $this->filter_multi_variations ) ) {
+            return $html;
+        }
+        
+        $has_multi = false;
+        foreach ( $this->filter_multi_variations as $product_id => $variation_ids ) {
+            if ( count( $variation_ids ) > 1 ) {
+                $has_multi = true;
+                break;
+            }
+        }
+        
+        if ( ! $has_multi ) {
+            return $html;
+        }
+        
+        foreach ( $this->filter_multi_variations as $product_id => $variation_ids ) {
+            if ( count( $variation_ids ) <= 1 ) {
+                continue;
+            }
+            
+            $card_info = $this->extract_product_card( $html, $product_id );
+            if ( ! $card_info ) {
+                continue;
+            }
+            
+            $original_card = $card_info['html'];
+            $product_permalink = get_permalink( $product_id );
+            
+            $first_variation = $this->get_cached_variation( $variation_ids[0] );
+            $first_query_args = $first_variation ? $this->build_variation_query_args( $first_variation ) : array();
+            $first_url = ! empty( $first_query_args ) ? add_query_arg( $first_query_args, $product_permalink ) : $product_permalink;
+            
+            $extra_cards = '';
+            
+            for ( $i = 1; $i < count( $variation_ids ); $i++ ) {
+                $variation_id = $variation_ids[ $i ];
+                $variation = $this->get_cached_variation( $variation_id );
+                if ( ! $variation ) {
+                    continue;
+                }
+                
+                $cloned_card = $original_card;
+                
+                $image_id = $variation->get_image_id();
+                if ( $image_id ) {
+                    $img_src = wp_get_attachment_image_src( $image_id, 'woocommerce_thumbnail' );
+                    if ( $img_src ) {
+                        $cloned_card = preg_replace(
+                            '/(<img[^>]*?\s)src\s*=\s*"[^"]*"/',
+                            '$1src="' . esc_url( $img_src[0] ) . '"',
+                            $cloned_card,
+                            1
+                        );
+                        
+                        $srcset = wp_get_attachment_image_srcset( $image_id, 'woocommerce_thumbnail' );
+                        if ( $srcset ) {
+                            $cloned_card = preg_replace( '/srcset\s*=\s*"[^"]*"/', 'srcset="' . esc_attr( $srcset ) . '"', $cloned_card, 1 );
+                        } else {
+                            $cloned_card = preg_replace( '/\s*srcset\s*=\s*"[^"]*"/', '', $cloned_card, 1 );
+                        }
+                        
+                        $cloned_card = preg_replace( '/data-src\s*=\s*"[^"]*"/', 'data-src="' . esc_url( $img_src[0] ) . '"', $cloned_card );
+                        
+                        if ( $srcset ) {
+                            $cloned_card = preg_replace( '/data-srcset\s*=\s*"[^"]*"/', 'data-srcset="' . esc_attr( $srcset ) . '"', $cloned_card );
+                        }
+                    }
+                }
+                
+                $query_args = $this->build_variation_query_args( $variation );
+                if ( ! empty( $query_args ) ) {
+                    $new_url = add_query_arg( $query_args, $product_permalink );
+                    
+                    $urls_to_replace = array(
+                        esc_url( $first_url ),
+                        esc_attr( $first_url ),
+                        $first_url,
+                        esc_url( $product_permalink ),
+                        esc_attr( $product_permalink ),
+                        $product_permalink,
+                    );
+                    $urls_to_replace = array_unique( $urls_to_replace );
+                    
+                    foreach ( $urls_to_replace as $old_url ) {
+                        $escaped_old = preg_quote( $old_url, '/' );
+                        $cloned_card = preg_replace(
+                            '/href\s*=\s*"' . $escaped_old . '[^"]*"/',
+                            'href="' . esc_url( $new_url ) . '"',
+                            $cloned_card
+                        );
+                    }
+                }
+                
+                $extra_cards .= $cloned_card;
+            }
+            
+            if ( ! empty( $extra_cards ) ) {
+                $html = substr_replace(
+                    $html,
+                    $original_card . $extra_cards,
+                    $card_info['start'],
+                    $card_info['end'] - $card_info['start']
+                );
+            }
+        }
+        
+        return $html;
+    }
+    
     private function get_variations_by_tonalidade_slug( $filter_value ) {
         global $wpdb;
         
@@ -434,18 +543,7 @@ class WooVariationSearch {
         return wp_get_attachment_image( $variation_image_id, $image_size, false, $attr );
     }
     
-    /**
-     * Get current variation ID for a product
-     * In filter mode with queue, returns the variation currently being rendered
-     * In search mode, returns the first matched variation
-     */
     private function get_current_variation_for_product( $product_id ) {
-        global $post;
-        
-        if ( $this->is_filter_results && isset( $post->_wvs_variation_id ) ) {
-            return (int) $post->_wvs_variation_id;
-        }
-        
         if ( isset( $this->matched_variations_cache[ $product_id ] ) ) {
             return $this->matched_variations_cache[ $product_id ];
         }
@@ -595,29 +693,42 @@ class WooVariationSearch {
         }
     }
     
+    private function get_variation_image_url( $variation_id ) {
+        $variation = $this->get_cached_variation( $variation_id );
+        
+        if ( ! $variation || ! $variation->get_image_id() ) {
+            return '';
+        }
+        
+        $image_data = wp_get_attachment_image_src( $variation->get_image_id(), 'woocommerce_thumbnail' );
+        
+        return $image_data ? $image_data[0] : '';
+    }
+    
     private function get_matched_variations( $search ) {
         global $wpdb;
         
-        $search_original = mb_strtolower( trim( $search ) );
-        $search_sanitized = sanitize_title( remove_accents( $search ) );
-        
-        if ( empty( $search_original ) ) {
+        if ( empty( $search ) ) {
             return array();
         }
         
+        $search_lower = mb_strtolower( $search );
+        $search_sanitized = sanitize_title( remove_accents( $search ) );
+        
+        $search_patterns = array(
+            '%' . $wpdb->esc_like( $search_lower ) . '%',
+            '%' . $wpdb->esc_like( $search_sanitized ) . '%'
+        );
+        
         $matched = array();
+        
         $lookup_table = $wpdb->prefix . 'wc_product_attributes_lookup';
         $terms_table = $wpdb->prefix . 'terms';
         
         $table_exists = $wpdb->get_var( "SHOW TABLES LIKE '{$lookup_table}'" );
         
-        $search_patterns = array(
-            '%' . $wpdb->esc_like( $search_original ) . '%',
-            '%' . $wpdb->esc_like( $search_sanitized ) . '%'
-        );
-        
         if ( $table_exists ) {
-            $color_products = $wpdb->get_results( $wpdb->prepare(
+            $results = $wpdb->get_results( $wpdb->prepare(
                 "SELECT pal.product_or_parent_id as parent_id, pal.product_id as variation_id
                 FROM {$lookup_table} pal
                 INNER JOIN {$terms_table} t ON pal.term_id = t.term_id
@@ -638,46 +749,44 @@ class WooVariationSearch {
                 $search_patterns[1]
             ) );
             
-            if ( $color_products ) {
-                foreach ( $color_products as $row ) {
+            if ( $results ) {
+                foreach ( $results as $row ) {
                     if ( ! isset( $matched[ $row->parent_id ] ) ) {
                         $matched[ $row->parent_id ] = (int) $row->variation_id;
                     }
                 }
             }
+        } else {
+            $term_taxonomy_table = $wpdb->prefix . 'term_taxonomy';
             
-            return $matched;
-        }
-        
-        $term_taxonomy_table = $wpdb->prefix . 'term_taxonomy';
-        
-        $variations = $wpdb->get_results( $wpdb->prepare(
-            "SELECT p.ID as variation_id, p.post_parent as parent_id
-            FROM {$wpdb->posts} p
-            INNER JOIN {$wpdb->postmeta} pm_attr ON p.ID = pm_attr.post_id AND pm_attr.meta_key = 'attribute_pa_cores-de-tecidos'
-            INNER JOIN {$wpdb->postmeta} pm_stock ON p.ID = pm_stock.post_id AND pm_stock.meta_key = '_stock_status'
-            INNER JOIN {$terms_table} t ON pm_attr.meta_value = t.slug OR pm_attr.meta_value = t.name
-            INNER JOIN {$term_taxonomy_table} tt ON t.term_id = tt.term_id AND tt.taxonomy = 'pa_cores-de-tecidos'
-            WHERE p.post_type = 'product_variation'
-            AND p.post_status = 'publish'
-            AND pm_stock.meta_value IN ('instock', 'onbackorder')
-            AND (
-                LOWER(t.name) LIKE %s
-                OR LOWER(t.name) LIKE %s
-                OR t.slug LIKE %s
-                OR t.slug LIKE %s
-            )
-            ORDER BY p.post_parent, p.ID",
-            $search_patterns[0],
-            $search_patterns[1],
-            $search_patterns[0],
-            $search_patterns[1]
-        ) );
-        
-        if ( $variations ) {
-            foreach ( $variations as $row ) {
-                if ( ! isset( $matched[ $row->parent_id ] ) ) {
-                    $matched[ $row->parent_id ] = (int) $row->variation_id;
+            $results = $wpdb->get_results( $wpdb->prepare(
+                "SELECT p.post_parent as parent_id, p.ID as variation_id
+                FROM {$wpdb->posts} p
+                INNER JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id AND pm.meta_key = 'attribute_pa_cores-de-tecidos'
+                INNER JOIN {$wpdb->postmeta} pm_stock ON p.ID = pm_stock.post_id AND pm_stock.meta_key = '_stock_status'
+                INNER JOIN {$terms_table} t ON pm.meta_value = t.slug OR pm.meta_value = t.name
+                INNER JOIN {$term_taxonomy_table} tt ON t.term_id = tt.term_id AND tt.taxonomy = 'pa_cores-de-tecidos'
+                WHERE p.post_type = 'product_variation'
+                AND p.post_status = 'publish'
+                AND pm_stock.meta_value IN ('instock', 'onbackorder')
+                AND (
+                    LOWER(t.name) LIKE %s
+                    OR LOWER(t.name) LIKE %s
+                    OR t.slug LIKE %s
+                    OR t.slug LIKE %s
+                )
+                ORDER BY p.post_parent, p.ID",
+                $search_patterns[0],
+                $search_patterns[1],
+                $search_patterns[0],
+                $search_patterns[1]
+            ) );
+            
+            if ( $results ) {
+                foreach ( $results as $row ) {
+                    if ( ! isset( $matched[ $row->parent_id ] ) ) {
+                        $matched[ $row->parent_id ] = (int) $row->variation_id;
+                    }
                 }
             }
         }
@@ -692,203 +801,109 @@ class WooVariationSearch {
             return array();
         }
         
-        $search_lower = mb_strtolower( $search );
-        $search_escaped = '%' . $wpdb->esc_like( $search_lower ) . '%';
+        $search_escaped = '%' . $wpdb->esc_like( $search ) . '%';
         
-        $product_ids = $wpdb->get_col( $wpdb->prepare(
-            "SELECT DISTINCT p.ID
-            FROM {$wpdb->posts} p
-            INNER JOIN {$wpdb->term_relationships} tr ON p.ID = tr.object_id
-            INNER JOIN {$wpdb->term_taxonomy} tt ON tr.term_taxonomy_id = tt.term_taxonomy_id
-            INNER JOIN {$wpdb->terms} t ON tt.term_id = t.term_id
-            WHERE p.post_type = 'product'
-            AND p.post_status = 'publish'
-            AND tt.taxonomy = 'product_tag'
-            AND (LOWER(t.name) LIKE %s OR LOWER(t.slug) LIKE %s)",
-            $search_escaped,
+        return $wpdb->get_col( $wpdb->prepare(
+            "SELECT DISTINCT tr.object_id
+            FROM {$wpdb->terms} t
+            INNER JOIN {$wpdb->term_taxonomy} tt ON t.term_id = tt.term_id
+            INNER JOIN {$wpdb->term_relationships} tr ON tt.term_taxonomy_id = tr.term_taxonomy_id
+            WHERE tt.taxonomy = 'product_tag'
+            AND t.name LIKE %s",
             $search_escaped
         ) );
-        
-        return $product_ids ? $product_ids : array();
-    }
-    
-    private function get_variation_image_url( $product_id, $matched_variations ) {
-        if ( isset( $matched_variations[ $product_id ] ) ) {
-            $variation = $this->get_cached_variation( $matched_variations[ $product_id ] );
-            if ( $variation && $variation->get_image_id() ) {
-                $product_image = wp_get_attachment_image_src( $variation->get_image_id(), 'woocommerce_thumbnail' );
-                if ( $product_image ) {
-                    return $product_image[0];
-                }
-            }
-        }
-        
-        $product = wc_get_product( $product_id );
-        if ( $product && $product->get_image_id() ) {
-            $product_image = wp_get_attachment_image_src( $product->get_image_id(), 'woocommerce_thumbnail' );
-            return $product_image ? $product_image[0] : '';
-        }
-        
-        return '';
-    }
-    
-    private function get_variation_url( $product, $matched_variations ) {
-        $permalink = $product->get_permalink();
-        $product_id = $product->get_id();
-        
-        if ( ! isset( $matched_variations[ $product_id ] ) ) {
-            return $permalink;
-        }
-        
-        $variation = $this->get_cached_variation( $matched_variations[ $product_id ] );
-        $query_args = $this->build_variation_query_args( $variation );
-        
-        if ( ! empty( $query_args ) ) {
-            $permalink = add_query_arg( $query_args, $permalink );
-        }
-        
-        return $permalink;
     }
     
     public function custom_ajax_search() {
-        header( 'X-LiteSpeed-Cache-Control: no-cache' );
-        header( 'X-LiteSpeed-Purge: no' );
-        header( 'Cache-Control: no-cache, no-store, must-revalidate, private' );
-        header( 'Pragma: no-cache' );
-        header( 'Expires: 0' );
+        $search = isset( $_REQUEST['query'] ) ? sanitize_text_field( wp_unslash( $_REQUEST['query'] ) ) : '';
         
-        global $post;
-        $original_post = $post;
-        
-        self::$is_our_search = true;
-        
-        if ( ! isset( $_REQUEST['query'] ) ) {
-            wp_send_json_error( array( 'message' => 'No search query provided' ) );
-        }
-
-        $query = apply_filters( 'flatsome_ajax_search_query', sanitize_text_field( wp_unslash( $_REQUEST['query'] ) ) );
-        
-        if ( empty( $query ) ) {
+        if ( empty( $search ) ) {
             wp_send_json( array( 'suggestions' => array() ) );
         }
         
-        $wc_activated = function_exists( 'is_woocommerce_activated' ) ? is_woocommerce_activated() : class_exists( 'WooCommerce' );
-        $suggestions  = array();
-
-        $args = array(
-            's'                   => $query,
-            'orderby'             => '',
-            'post_type'           => array(),
-            'post_status'         => 'publish',
-            'posts_per_page'      => 100,
-            'ignore_sticky_posts' => 1,
-            'post_password'       => '',
-            'suppress_filters'    => true,
-        );
-
-        $matched_variations = $this->get_cached_matched_variations( $query );
-        $added_ids = array();
-
-        if ( $wc_activated ) {
-            global $wpdb;
-            $search_escaped = '%' . $wpdb->esc_like( $query ) . '%';
+        self::$is_our_search = true;
+        
+        $matched_variations = $this->get_matched_variations( $search );
+        $variation_product_ids = ! empty( $matched_variations ) ? array_keys( $matched_variations ) : array();
+        
+        global $wpdb;
+        $search_escaped = '%' . $wpdb->esc_like( $search ) . '%';
+        
+        $title_matches = $wpdb->get_col( $wpdb->prepare(
+            "SELECT ID FROM {$wpdb->posts}
+            WHERE post_type = 'product'
+            AND post_status = 'publish'
+            AND post_title LIKE %s",
+            $search_escaped
+        ) );
+        
+        $tag_matches = $this->get_products_by_tag( $search );
+        
+        $all_product_ids = array_unique( array_merge( $title_matches, $variation_product_ids, $tag_matches ) );
+        
+        if ( empty( $all_product_ids ) ) {
+            wp_send_json( array( 'suggestions' => array() ) );
+        }
+        
+        $in_stock_ids = $this->filter_in_stock_products( $all_product_ids );
+        
+        if ( empty( $in_stock_ids ) ) {
+            wp_send_json( array( 'suggestions' => array() ) );
+        }
+        
+        $suggestions = array();
+        
+        foreach ( $in_stock_ids as $product_id ) {
+            $product = wc_get_product( $product_id );
+            if ( ! $product ) continue;
             
-            $title_product_ids = $wpdb->get_col( $wpdb->prepare(
-                "SELECT ID FROM {$wpdb->posts} 
-                WHERE post_type = 'product' 
-                AND post_status = 'publish' 
-                AND post_title LIKE %s",
-                $search_escaped
-            ) );
+            $img_url = '';
+            $permalink = $product->get_permalink();
             
-            $color_product_ids = ! empty( $matched_variations ) ? array_keys( $matched_variations ) : array();
-            $tag_product_ids = $this->get_products_by_tag( $query );
-            
-            $merged_ids = array_unique( array_merge( $title_product_ids, $color_product_ids, $tag_product_ids ) );
-            $in_stock_ids = $this->filter_in_stock_products( $merged_ids );
-            
-            foreach ( $in_stock_ids as $product_id ) {
-                if ( in_array( $product_id, $added_ids, true ) ) {
-                    continue;
+            if ( isset( $matched_variations[ $product_id ] ) ) {
+                $variation_id = $matched_variations[ $product_id ];
+                $variation_img = $this->get_variation_image_url( $variation_id );
+                
+                if ( ! empty( $variation_img ) ) {
+                    $img_url = $variation_img;
                 }
                 
-                $product = wc_get_product( $product_id );
-                
-                if ( ! $product || $product->get_status() !== 'publish' ) {
-                    continue;
-                }
-                
-                $added_ids[] = $product_id;
-                
-                $img_url = $this->get_variation_image_url( $product_id, $matched_variations );
-                $product_url = $this->get_variation_url( $product, $matched_variations );
-
-                $suggestions[] = array(
-                    'type'  => 'Product',
-                    'id'    => $product_id,
-                    'value' => $product->get_title(),
-                    'url'   => $product_url,
-                    'img'   => $img_url,
-                    'price' => $product->get_price_html(),
-                );
-                
-                if ( count( $suggestions ) >= 20 ) {
-                    break;
+                $variation = $this->get_cached_variation( $variation_id );
+                $query_args = $this->build_variation_query_args( $variation );
+                if ( ! empty( $query_args ) ) {
+                    $permalink = add_query_arg( $query_args, $permalink );
                 }
             }
-        }
-
-        if ( ( ! $wc_activated || get_theme_mod( 'search_result', 1 ) ) && ! isset( $_REQUEST['product_cat'] ) ) {
-            if ( function_exists( 'flatsome_ajax_search_posts' ) ) {
-                $posts = flatsome_ajax_search_posts( $args );
-                wp_reset_postdata();
-                
-                foreach ( $posts as $result_post ) {
-                    if ( in_array( $result_post->ID, $added_ids, true ) ) {
-                        continue;
+            
+            if ( empty( $img_url ) ) {
+                $thumb_id = $product->get_image_id();
+                if ( $thumb_id ) {
+                    $img_data = wp_get_attachment_image_src( $thumb_id, 'woocommerce_thumbnail' );
+                    if ( $img_data ) {
+                        $img_url = $img_data[0];
                     }
-                    
-                    $title_lower = mb_strtolower( get_the_title( $result_post->ID ) );
-                    if ( strpos( $title_lower, mb_strtolower( $query ) ) === false ) {
-                        continue;
-                    }
-                    
-                    $added_ids[] = $result_post->ID;
-                    
-                    $suggestions[] = array(
-                        'type'  => 'Page',
-                        'id'    => $result_post->ID,
-                        'value' => get_the_title( $result_post->ID ),
-                        'url'   => get_the_permalink( $result_post->ID ),
-                        'img'   => get_the_post_thumbnail_url( $result_post->ID, 'thumbnail' ),
-                        'price' => '',
-                    );
                 }
             }
-        }
-
-        if ( empty( $suggestions ) ) {
-            $no_results = $wc_activated ? __( 'No products found.', 'woocommerce' ) : __( 'No matches found', 'flatsome' );
-
+            
+            if ( empty( $img_url ) ) {
+                $img_url = wc_placeholder_img_src( 'woocommerce_thumbnail' );
+            }
+            
             $suggestions[] = array(
-                'id'    => -1,
-                'value' => $no_results,
-                'url'   => '',
+                'value' => $product->get_name(),
+                'url'   => $permalink,
+                'img'   => $img_url,
+                'price' => $product->get_price_html(),
             );
         }
-
-        if ( function_exists( 'flatsome_unique_suggestions' ) ) {
-            $suggestions = flatsome_unique_suggestions( array(), $suggestions );
-        }
-
-        self::$is_our_search = false;
-        $post = $original_post;
-        wp_reset_postdata();
         
         wp_send_json( array( 'suggestions' => $suggestions ) );
     }
 }
 
-add_action( 'after_setup_theme', function() {
+add_action( 'plugins_loaded', function() {
+    if ( ! class_exists( 'WooCommerce' ) ) {
+        return;
+    }
     WooVariationSearch::get_instance();
 }, 100 );
