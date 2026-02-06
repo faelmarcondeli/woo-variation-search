@@ -26,7 +26,6 @@ class WooVariationSearch {
     private $current_search_query = '';
     private $current_filter_term = '';
     private $filter_multi_variations = array();
-    private $variation_queue = array();
     
     public static function get_instance() {
         if ( self::$instance === null ) {
@@ -122,7 +121,6 @@ class WooVariationSearch {
     /**
      * Setup filter for tonalidades-de-tecidos widget
      * When a customer filters by tonalidade (e.g., "Azul"), show variation images matching that color
-     * Hooked to woocommerce_product_query (before query runs) so the_posts filter can duplicate posts
      */
     public function setup_tonalidade_filter( $query ) {
         if ( $this->is_filter_results ) {
@@ -141,49 +139,14 @@ class WooVariationSearch {
         if ( ! empty( $this->filter_multi_variations ) ) {
             foreach ( $this->filter_multi_variations as $product_id => $variation_ids ) {
                 $this->matched_variations_cache[ $product_id ] = $variation_ids[0];
-                $this->variation_queue[ $product_id ] = $variation_ids;
             }
             
             $this->is_filter_results = true;
-            add_filter( 'the_posts', array( $this, 'duplicate_posts_for_multi_variations' ), 999, 2 );
             add_filter( 'woocommerce_product_get_image', array( $this, 'filter_product_image_html' ), 999, 5 );
             add_filter( 'woocommerce_loop_product_link', array( $this, 'filter_product_link' ), 999, 2 );
             add_filter( 'post_type_link', array( $this, 'filter_product_permalink' ), 999, 2 );
             add_action( 'wp_footer', array( $this, 'add_variation_link_script' ) );
         }
-    }
-    
-    /**
-     * Duplicate product posts in the loop for products with multiple matching variations
-     */
-    public function duplicate_posts_for_multi_variations( $posts, $query ) {
-        if ( empty( $this->filter_multi_variations ) ) {
-            return $posts;
-        }
-        
-        if ( $query->get( 'wc_query' ) !== 'product_query' ) {
-            return $posts;
-        }
-        
-        $new_posts = array();
-        
-        foreach ( $posts as $post ) {
-            $product_id = $post->ID;
-            
-            if ( isset( $this->filter_multi_variations[ $product_id ] ) ) {
-                foreach ( $this->filter_multi_variations[ $product_id ] as $variation_id ) {
-                    $cloned_post = clone $post;
-                    $cloned_post->_current_variation_id = $variation_id;
-                    $new_posts[] = $cloned_post;
-                }
-            } else {
-                $new_posts[] = $post;
-            }
-        }
-        
-        $query->found_posts = count( $new_posts );
-        
-        return $new_posts;
     }
     
     /**
@@ -312,10 +275,27 @@ class WooVariationSearch {
                 $variation_data[ $product_id ] = array();
                 foreach ( $variation_ids as $var_id ) {
                     $variation = $this->get_cached_variation( $var_id );
+                    if ( ! $variation ) continue;
+                    
                     $query_params = $this->build_variation_query_args( $variation );
-                    if ( ! empty( $query_params ) ) {
-                        $variation_data[ $product_id ][] = $query_params;
+                    $image_id = $variation->get_image_id();
+                    $image_url = '';
+                    $image_srcset = '';
+                    $image_sizes = '';
+                    
+                    if ( $image_id ) {
+                        $img_src = wp_get_attachment_image_src( $image_id, 'woocommerce_thumbnail' );
+                        $image_url = $img_src ? $img_src[0] : '';
+                        $image_srcset = wp_get_attachment_image_srcset( $image_id, 'woocommerce_thumbnail' );
+                        $image_sizes = wp_get_attachment_image_sizes( $image_id, 'woocommerce_thumbnail' );
                     }
+                    
+                    $variation_data[ $product_id ][] = array(
+                        'params'      => $query_params,
+                        'image_url'   => $image_url,
+                        'image_srcset' => $image_srcset ? $image_srcset : '',
+                        'image_sizes'  => $image_sizes ? $image_sizes : '',
+                    );
                 }
             }
         } else {
@@ -323,7 +303,7 @@ class WooVariationSearch {
                 $variation = $this->get_cached_variation( $variation_id );
                 $query_params = $this->build_variation_query_args( $variation );
                 if ( ! empty( $query_params ) ) {
-                    $variation_data[ $product_id ] = array( $query_params );
+                    $variation_data[ $product_id ] = array( array( 'params' => $query_params ) );
                 }
             }
         }
@@ -331,43 +311,96 @@ class WooVariationSearch {
         if ( empty( $variation_data ) ) {
             return;
         }
+        
+        $is_multi = $this->is_filter_results && ! empty( $this->filter_multi_variations );
         ?>
         <script type="text/javascript">
         (function() {
             var variationData = <?php echo json_encode( $variation_data ); ?>;
-            var usedIndexes = {};
+            var isMultiMode = <?php echo $is_multi ? 'true' : 'false'; ?>;
             
-            document.querySelectorAll('.products .product').forEach(function(productEl) {
-                var link = productEl.querySelector('a.woocommerce-LoopProduct-link, a.plain');
-                if (!link) return;
-                
-                var href = link.getAttribute('href');
-                if (!href) return;
-                
-                for (var productId in variationData) {
-                    if (href.indexOf('p=' + productId) !== -1 || productEl.classList.contains('post-' + productId)) {
-                        if (!usedIndexes[productId]) usedIndexes[productId] = 0;
-                        var idx = usedIndexes[productId];
-                        var paramsArray = variationData[productId];
-                        
-                        if (idx < paramsArray.length) {
-                            var params = paramsArray[idx];
-                            var queryString = Object.keys(params).map(function(key) {
-                                return encodeURIComponent(key) + '=' + encodeURIComponent(params[key]);
-                            }).join('&');
-                            
-                            var newHref = href + (href.indexOf('?') === -1 ? '?' : '&') + queryString;
-                            
-                            productEl.querySelectorAll('a').forEach(function(a) {
-                                if (a.getAttribute('href') === href) {
-                                    a.setAttribute('href', newHref);
-                                }
-                            });
-                            
-                            usedIndexes[productId]++;
-                        }
-                        break;
+            function findProductId(productEl) {
+                var classes = productEl.className.split(/\s+/);
+                for (var i = 0; i < classes.length; i++) {
+                    var match = classes[i].match(/^post-(\d+)$/);
+                    if (match) return match[1];
+                }
+                var link = productEl.querySelector('a[href]');
+                if (link) {
+                    var href = link.getAttribute('href');
+                    for (var pid in variationData) {
+                        if (href.indexOf('p=' + pid) !== -1) return pid;
                     }
+                }
+                return null;
+            }
+            
+            function buildQueryString(params) {
+                return Object.keys(params).map(function(key) {
+                    return encodeURIComponent(key) + '=' + encodeURIComponent(params[key]);
+                }).join('&');
+            }
+            
+            function updateCardLinks(card, originalHref, queryParams) {
+                var qs = buildQueryString(queryParams);
+                var newHref = originalHref + (originalHref.indexOf('?') === -1 ? '?' : '&') + qs;
+                card.querySelectorAll('a').forEach(function(a) {
+                    var aHref = a.getAttribute('href');
+                    if (aHref === originalHref || aHref === newHref) {
+                        a.setAttribute('href', newHref);
+                    }
+                });
+            }
+            
+            function updateCardImage(card, varData) {
+                if (!varData.image_url) return;
+                var img = card.querySelector('.product-image img, .box-image img, .product-thumbnail img');
+                if (!img) return;
+                img.setAttribute('src', varData.image_url);
+                if (varData.image_srcset) {
+                    img.setAttribute('srcset', varData.image_srcset);
+                }
+                if (varData.image_sizes) {
+                    img.setAttribute('sizes', varData.image_sizes);
+                }
+                if (img.dataset && img.dataset.src) {
+                    img.dataset.src = varData.image_url;
+                }
+                if (img.dataset && img.dataset.srcset) {
+                    img.dataset.srcset = varData.image_srcset || '';
+                }
+            }
+            
+            var productCards = document.querySelectorAll('.products .product');
+            
+            productCards.forEach(function(productEl) {
+                var productId = findProductId(productEl);
+                if (!productId || !variationData[productId]) return;
+                
+                var variations = variationData[productId];
+                var link = productEl.querySelector('a.woocommerce-LoopProduct-link, a.plain, a[href]');
+                if (!link) return;
+                var originalHref = link.getAttribute('href');
+                
+                if (variations[0] && variations[0].params) {
+                    updateCardLinks(productEl, originalHref, variations[0].params);
+                }
+                
+                if (!isMultiMode || variations.length <= 1) return;
+                
+                for (var i = 1; i < variations.length; i++) {
+                    var clone = productEl.cloneNode(true);
+                    
+                    updateCardImage(clone, variations[i]);
+                    
+                    if (variations[i].params) {
+                        clone.querySelectorAll('a').forEach(function(a) {
+                            a.setAttribute('href', originalHref);
+                        });
+                        updateCardLinks(clone, originalHref, variations[i].params);
+                    }
+                    
+                    productEl.parentNode.insertBefore(clone, productEl.nextSibling);
                 }
             });
         })();
@@ -422,16 +455,9 @@ class WooVariationSearch {
     }
     
     /**
-     * Get current variation ID for a product
-     * In filter mode, uses the _current_variation_id set on cloned posts
+     * Get current variation ID for a product (first matching variation)
      */
     private function get_current_variation_for_product( $product_id ) {
-        global $post;
-        
-        if ( $this->is_filter_results && isset( $post->_current_variation_id ) ) {
-            return (int) $post->_current_variation_id;
-        }
-        
         if ( isset( $this->matched_variations_cache[ $product_id ] ) ) {
             return $this->matched_variations_cache[ $product_id ];
         }
