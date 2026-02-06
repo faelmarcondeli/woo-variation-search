@@ -38,7 +38,7 @@ class WooVariationSearch {
     private function __construct() {
         add_action( 'template_redirect', array( $this, 'redirect_product_search' ) );
         add_action( 'wp', array( $this, 'setup_search_image_filter' ) );
-        add_action( 'wp', array( $this, 'setup_tonalidade_filter' ) );
+        add_action( 'woocommerce_product_query', array( $this, 'setup_tonalidade_filter' ), 998 );
         add_action( 'woocommerce_product_query', array( $this, 'modify_wc_product_query' ), 999 );
         
         if ( get_theme_mod( 'search_live_search', 1 ) ) {
@@ -122,8 +122,13 @@ class WooVariationSearch {
     /**
      * Setup filter for tonalidades-de-tecidos widget
      * When a customer filters by tonalidade (e.g., "Azul"), show variation images matching that color
+     * Hooked to woocommerce_product_query (before query runs) so the_posts filter can duplicate posts
      */
-    public function setup_tonalidade_filter() {
+    public function setup_tonalidade_filter( $query ) {
+        if ( $this->is_filter_results ) {
+            return;
+        }
+        
         $filter_value = isset( $_GET['filter_tonalidades-de-tecidos'] ) ? sanitize_text_field( $_GET['filter_tonalidades-de-tecidos'] ) : '';
         
         if ( empty( $filter_value ) ) {
@@ -152,7 +157,11 @@ class WooVariationSearch {
      * Duplicate product posts in the loop for products with multiple matching variations
      */
     public function duplicate_posts_for_multi_variations( $posts, $query ) {
-        if ( ! $query->is_main_query() || empty( $this->filter_multi_variations ) ) {
+        if ( empty( $this->filter_multi_variations ) ) {
+            return $posts;
+        }
+        
+        if ( $query->get( 'wc_query' ) !== 'product_query' ) {
             return $posts;
         }
         
