@@ -4,6 +4,13 @@
 This is a WordPress plugin that integrates the Flatsome theme AJAX search with WooCommerce product variations. It allows customers to search products by attribute values (like color or size).
 
 ## Recent Changes
+- **2026-02-06**: Multi-variation support for tonalidade filter (Version 2.2)
+  - Shows ALL matching variations per product as separate cards in the grid
+  - E.g., "Laranja Claro" and "Laranja Escuro" both appear when filtering by "laranja"
+  - Uses post cloning with `_current_variation_id` tracking
+  - LIKE-based matching on `pa_cores-de-tecidos` taxonomy
+  - Removed page type restrictions (works on any page)
+
 - **2026-02-05**: Added tonalidade filter support (Version 2.1)
   - Added support for `filter_tonalidades-de-tecidos` widget
   - When filtering by tonalidade (e.g., "Azul"), shows variation images matching that tone

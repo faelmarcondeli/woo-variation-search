@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WooCommerce Variation Search
  * Description: Integra a busca AJAX do tema Flatsome com variações de produtos WooCommerce
- * Version: 2.1
+ * Version: 2.2
  * Author: Custom
  * Requires PHP: 7.4
  * Requires at least: 6.0
@@ -25,6 +25,8 @@ class WooVariationSearch {
     private $is_filter_results = false;
     private $current_search_query = '';
     private $current_filter_term = '';
+    private $filter_multi_variations = array();
+    private $variation_queue = array();
     
     public static function get_instance() {
         if ( self::$instance === null ) {
@@ -85,11 +87,12 @@ class WooVariationSearch {
      * Helper: Add variation attributes to permalink
      */
     private function append_variation_params_to_url( $permalink, $product_id ) {
-        if ( ! isset( $this->matched_variations_cache[ $product_id ] ) ) {
+        $variation_id = $this->get_current_variation_for_product( $product_id );
+        
+        if ( ! $variation_id ) {
             return $permalink;
         }
         
-        $variation_id = $this->matched_variations_cache[ $product_id ];
         $variation = $this->get_cached_variation( $variation_id );
         $query_args = $this->build_variation_query_args( $variation );
         
@@ -128,15 +131,50 @@ class WooVariationSearch {
         }
         
         $this->current_filter_term = $filter_value;
-        $this->matched_variations_cache = $this->get_variations_by_tonalidade_slug( $filter_value );
+        $this->filter_multi_variations = $this->get_variations_by_tonalidade_slug( $filter_value );
         
-        if ( ! empty( $this->matched_variations_cache ) ) {
+        if ( ! empty( $this->filter_multi_variations ) ) {
+            foreach ( $this->filter_multi_variations as $product_id => $variation_ids ) {
+                $this->matched_variations_cache[ $product_id ] = $variation_ids[0];
+                $this->variation_queue[ $product_id ] = $variation_ids;
+            }
+            
             $this->is_filter_results = true;
+            add_filter( 'the_posts', array( $this, 'duplicate_posts_for_multi_variations' ), 999, 2 );
             add_filter( 'woocommerce_product_get_image', array( $this, 'filter_product_image_html' ), 999, 5 );
             add_filter( 'woocommerce_loop_product_link', array( $this, 'filter_product_link' ), 999, 2 );
             add_filter( 'post_type_link', array( $this, 'filter_product_permalink' ), 999, 2 );
             add_action( 'wp_footer', array( $this, 'add_variation_link_script' ) );
         }
+    }
+    
+    /**
+     * Duplicate product posts in the loop for products with multiple matching variations
+     */
+    public function duplicate_posts_for_multi_variations( $posts, $query ) {
+        if ( ! $query->is_main_query() || empty( $this->filter_multi_variations ) ) {
+            return $posts;
+        }
+        
+        $new_posts = array();
+        
+        foreach ( $posts as $post ) {
+            $product_id = $post->ID;
+            
+            if ( isset( $this->filter_multi_variations[ $product_id ] ) ) {
+                foreach ( $this->filter_multi_variations[ $product_id ] as $variation_id ) {
+                    $cloned_post = clone $post;
+                    $cloned_post->_current_variation_id = $variation_id;
+                    $new_posts[] = $cloned_post;
+                }
+            } else {
+                $new_posts[] = $post;
+            }
+        }
+        
+        $query->found_posts = count( $new_posts );
+        
+        return $new_posts;
     }
     
     /**
@@ -195,9 +233,7 @@ class WooVariationSearch {
                 
                 if ( $tonalidade_products ) {
                     foreach ( $tonalidade_products as $row ) {
-                        if ( ! isset( $matched[ $row->parent_id ] ) ) {
-                            $matched[ $row->parent_id ] = (int) $row->variation_id;
-                        }
+                        $matched[ $row->parent_id ][] = (int) $row->variation_id;
                     }
                 }
             } else {
@@ -228,9 +264,7 @@ class WooVariationSearch {
                 
                 if ( $variations ) {
                     foreach ( $variations as $row ) {
-                        if ( ! isset( $matched[ $row->parent_id ] ) ) {
-                            $matched[ $row->parent_id ] = (int) $row->variation_id;
-                        }
+                        $matched[ $row->parent_id ][] = (int) $row->variation_id;
                     }
                 }
             }
@@ -264,12 +298,24 @@ class WooVariationSearch {
     public function add_variation_link_script() {
         $variation_data = array();
         
-        foreach ( $this->matched_variations_cache as $product_id => $variation_id ) {
-            $variation = $this->get_cached_variation( $variation_id );
-            $query_params = $this->build_variation_query_args( $variation );
-            
-            if ( ! empty( $query_params ) ) {
-                $variation_data[ $product_id ] = $query_params;
+        if ( $this->is_filter_results && ! empty( $this->filter_multi_variations ) ) {
+            foreach ( $this->filter_multi_variations as $product_id => $variation_ids ) {
+                $variation_data[ $product_id ] = array();
+                foreach ( $variation_ids as $var_id ) {
+                    $variation = $this->get_cached_variation( $var_id );
+                    $query_params = $this->build_variation_query_args( $variation );
+                    if ( ! empty( $query_params ) ) {
+                        $variation_data[ $product_id ][] = $query_params;
+                    }
+                }
+            }
+        } else {
+            foreach ( $this->matched_variations_cache as $product_id => $variation_id ) {
+                $variation = $this->get_cached_variation( $variation_id );
+                $query_params = $this->build_variation_query_args( $variation );
+                if ( ! empty( $query_params ) ) {
+                    $variation_data[ $product_id ] = array( $query_params );
+                }
             }
         }
         
@@ -280,6 +326,7 @@ class WooVariationSearch {
         <script type="text/javascript">
         (function() {
             var variationData = <?php echo json_encode( $variation_data ); ?>;
+            var usedIndexes = {};
             
             document.querySelectorAll('.products .product').forEach(function(productEl) {
                 var link = productEl.querySelector('a.woocommerce-LoopProduct-link, a.plain');
@@ -290,18 +337,26 @@ class WooVariationSearch {
                 
                 for (var productId in variationData) {
                     if (href.indexOf('p=' + productId) !== -1 || productEl.classList.contains('post-' + productId)) {
-                        var params = variationData[productId];
-                        var queryString = Object.keys(params).map(function(key) {
-                            return encodeURIComponent(key) + '=' + encodeURIComponent(params[key]);
-                        }).join('&');
+                        if (!usedIndexes[productId]) usedIndexes[productId] = 0;
+                        var idx = usedIndexes[productId];
+                        var paramsArray = variationData[productId];
                         
-                        var newHref = href + (href.indexOf('?') === -1 ? '?' : '&') + queryString;
-                        
-                        productEl.querySelectorAll('a').forEach(function(a) {
-                            if (a.getAttribute('href') === href) {
-                                a.setAttribute('href', newHref);
-                            }
-                        });
+                        if (idx < paramsArray.length) {
+                            var params = paramsArray[idx];
+                            var queryString = Object.keys(params).map(function(key) {
+                                return encodeURIComponent(key) + '=' + encodeURIComponent(params[key]);
+                            }).join('&');
+                            
+                            var newHref = href + (href.indexOf('?') === -1 ? '?' : '&') + queryString;
+                            
+                            productEl.querySelectorAll('a').forEach(function(a) {
+                                if (a.getAttribute('href') === href) {
+                                    a.setAttribute('href', newHref);
+                                }
+                            });
+                            
+                            usedIndexes[productId]++;
+                        }
                         break;
                     }
                 }
@@ -334,11 +389,12 @@ class WooVariationSearch {
         
         $product_id = $product->get_id();
         
-        if ( ! isset( $this->matched_variations_cache[ $product_id ] ) ) {
+        $variation_id = $this->get_current_variation_for_product( $product_id );
+        
+        if ( ! $variation_id ) {
             return $image;
         }
         
-        $variation_id = $this->matched_variations_cache[ $product_id ];
         $variation = $this->get_cached_variation( $variation_id );
         
         if ( ! $variation ) {
@@ -354,6 +410,24 @@ class WooVariationSearch {
         $image_size = apply_filters( 'single_product_archive_thumbnail_size', $size );
         
         return wp_get_attachment_image( $variation_image_id, $image_size, false, $attr );
+    }
+    
+    /**
+     * Get current variation ID for a product
+     * In filter mode, uses the _current_variation_id set on cloned posts
+     */
+    private function get_current_variation_for_product( $product_id ) {
+        global $post;
+        
+        if ( $this->is_filter_results && isset( $post->_current_variation_id ) ) {
+            return (int) $post->_current_variation_id;
+        }
+        
+        if ( isset( $this->matched_variations_cache[ $product_id ] ) ) {
+            return $this->matched_variations_cache[ $product_id ];
+        }
+        
+        return null;
     }
     
     public function modify_wc_product_query( $query ) {
